@@ -136,7 +136,12 @@ fn server_loop(mut conn: Connection, child: pty::PtyChild, rows: u16, cols: u16)
             if acked_num < current.num {
                 deadline = deadline.min(last_send + conn.rto());
             }
-            if term.generation() != last_gen || force_ack || force_frame {
+            if term.generation() != last_gen || force_frame {
+                deadline = deadline.min(last_send + conn.send_interval());
+            }
+            if force_ack {
+                // Input acks go out as empty frames with no pacing gate:
+                // wake promptly rather than at the frame interval.
                 deadline = deadline.min(last_send + SEND_INTERVAL_MIN);
             }
             if shutdown {
@@ -262,7 +267,10 @@ fn server_loop(mut conn: Connection, child: pty::PtyChild, rows: u16, cols: u16)
             let mut send_frame = false;
             let mut send_empty = false;
 
-            if (dirty || force_frame) && now.saturating_sub(last_send) >= SEND_INTERVAL_MIN {
+            // Fresh frames are paced by the SRTT-derived send interval
+            // (mosh: ~two frames per RTT, clamped 20..250ms), not a fixed
+            // floor — on a slow link more frames only self-congest it.
+            if (dirty || force_frame) && now.saturating_sub(last_send) >= conn.send_interval() {
                 last_gen = term.generation();
                 force_frame = false;
                 outstanding.push(FrameState {
@@ -543,6 +551,126 @@ mod tests {
             }
         }
 
+        assert!(saw_shutdown, "server never confirmed the client shutdown");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn fresh_frames_paced_by_send_interval() {
+        // A client that never supplies timestamps gives the server no RTT
+        // samples, so its send_interval stays at the 250ms initial-SRTT
+        // clamp. With the pty flooding output, a server paced by the fixed
+        // 20ms floor would emit ~30 fresh frames in the window; one paced
+        // by send_interval emits a handful. github #26.
+        let key = Key::random();
+        let (server_conn, port) = Connection::server((62400, 62499), &key, Family::Inet).unwrap();
+        let cmd: Vec<String> = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "while :; do echo spam; done".into(),
+        ];
+        let child = crate::pty::spawn_shell(Some(&cmd), 24, 80, &[]).unwrap();
+        util::set_nonblocking(child.master).unwrap();
+        let server = std::thread::spawn(move || server_loop(server_conn, child, 24, 80));
+
+        let addr = format!("127.0.0.1:{port}").parse().unwrap();
+        let mut conn = Connection::client(addr, &key).unwrap();
+        let mut fragmenter = Fragmenter::new();
+        let mut assembly = FragmentAssembly::new();
+
+        let recv_frames = |conn: &mut Connection,
+                               assembly: &mut FragmentAssembly,
+                               nums: &mut std::collections::HashSet<u64>,
+                               saw_shutdown: &mut bool|
+         -> u64 {
+            let mut highest = 0u64;
+            loop {
+                match conn.recv() {
+                    Ok(Some(payload)) => {
+                        let Ok(frag) = sync::Fragment::from_bytes(&payload) else {
+                            continue;
+                        };
+                        let Some(assembled) = assembly.add(frag) else {
+                            continue;
+                        };
+                        let Ok(frame) = ServerFrame::decode(&assembled) else {
+                            continue;
+                        };
+                        if !matches!(frame.body, FrameBody::Empty) {
+                            nums.insert(frame.frame_num);
+                        }
+                        highest = highest.max(frame.frame_num);
+                        if frame.flags & sync::FLAG_SHUTDOWN != 0 {
+                            *saw_shutdown = true;
+                        }
+                    }
+                    Ok(None) => continue,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(_) => break,
+                }
+            }
+            highest
+        };
+
+        // Hello (acked_frame 0), then measure for 600ms without acking so
+        // every received frame is a freshly produced one or a retransmit of
+        // it; distinct frame numbers count fresh productions.
+        let hello = ClientMessage {
+            flags: 0,
+            acked_frame: 0,
+            rows: 24,
+            cols: 80,
+            input_base: 0,
+            input: Vec::new(),
+        };
+        for frag in fragmenter.make_fragments(&hello.encode(), sync::FRAGMENT_CONTENTS_MAX) {
+            conn.send(&frag.to_bytes()).unwrap();
+        }
+        let mut nums = std::collections::HashSet::new();
+        let mut saw_shutdown = false;
+        let mut highest = 0u64;
+        let start = now_ms();
+        while now_ms().saturating_sub(start) < 600 {
+            highest = highest.max(recv_frames(
+                &mut conn,
+                &mut assembly,
+                &mut nums,
+                &mut saw_shutdown,
+            ));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!nums.is_empty(), "no frames arrived at all");
+        assert!(
+            nums.len() <= 6,
+            "{} distinct frames in 600ms — fresh frames not paced by send_interval",
+            nums.len()
+        );
+
+        // Wind down: request shutdown and ack everything we see.
+        let deadline = now_ms() + 15_000;
+        while now_ms() < deadline {
+            let msg = ClientMessage {
+                flags: sync::CLIENT_FLAG_SHUTDOWN,
+                acked_frame: highest,
+                rows: 24,
+                cols: 80,
+                input_base: 0,
+                input: Vec::new(),
+            };
+            for frag in fragmenter.make_fragments(&msg.encode(), sync::FRAGMENT_CONTENTS_MAX) {
+                conn.send(&frag.to_bytes()).unwrap();
+            }
+            if saw_shutdown && highest > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            highest = highest.max(recv_frames(
+                &mut conn,
+                &mut assembly,
+                &mut nums,
+                &mut saw_shutdown,
+            ));
+        }
         assert!(saw_shutdown, "server never confirmed the client shutdown");
         server.join().unwrap();
     }
