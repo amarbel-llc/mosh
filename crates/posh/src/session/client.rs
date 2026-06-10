@@ -126,6 +126,7 @@ impl DetachMatcher {
 
 fn client_loop(stream: UnixStream) -> Result<()> {
     util::install_sigwinch_handler();
+    util::install_client_signal_handlers();
     stream.set_nonblocking(true)?;
     let sock_fd = stream.as_raw_fd();
     util::set_nonblocking(STDIN)?;
@@ -151,6 +152,25 @@ fn client_loop(stream: UnixStream) -> Result<()> {
             ipc::append_frame(
                 &mut sock_write_buf,
                 Tag::Resize,
+                &ipc::encode_resize(rows, cols),
+            );
+        }
+
+        if util::take_flag(&util::SIGTERM_RECEIVED) {
+            // SIGTERM/SIGINT/SIGHUP: best-effort detach notice, then leave;
+            // cmd_attach restores the tty on the way out either way.
+            ipc::append_frame(&mut sock_write_buf, Tag::Detach, b"");
+            let _ = stream_writer.write(&sock_write_buf);
+            return Ok(());
+        }
+
+        if util::take_flag(&util::SIGCONT_RECEIVED) {
+            // Resumed after SIGSTOP/fg: re-Init so the daemon replays the
+            // screen (and picks up any size change while stopped).
+            let (rows, cols) = pty::term_size(STDOUT);
+            ipc::append_frame(
+                &mut sock_write_buf,
+                Tag::Init,
                 &ipc::encode_resize(rows, cols),
             );
         }

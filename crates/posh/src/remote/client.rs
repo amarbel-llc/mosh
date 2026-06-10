@@ -101,6 +101,7 @@ fn client_loop(
     predict_overwrite: bool,
 ) -> Result<()> {
     util::install_sigwinch_handler();
+    util::install_client_signal_handlers();
     util::set_nonblocking(STDIN)?;
 
     let (rows, cols) = pty::term_size(STDOUT);
@@ -161,6 +162,19 @@ fn client_loop(
             st.predict.reset();
             st.initialized = false; // full repaint at the new size
             send_now = true;
+        }
+
+        if util::take_flag(&util::SIGTERM_RECEIVED) {
+            // SIGTERM/SIGINT/SIGHUP: wind down through the normal shutdown
+            // handshake so run() restores the tty and the server hangs up
+            // the shell instead of lingering until the network timeout.
+            request_shutdown(&mut st);
+            send_now = true;
+        }
+
+        if util::take_flag(&util::SIGCONT_RECEIVED) {
+            // Resumed after SIGSTOP/fg: the outer terminal state is unknown.
+            st.initialized = false;
         }
 
         // Keystrokes -> quit sequence / prediction / reliable input stream.

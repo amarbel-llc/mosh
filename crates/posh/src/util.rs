@@ -230,6 +230,7 @@ pub fn set_nonblocking(fd: RawFd) -> std::io::Result<()> {
 pub static SIGWINCH_RECEIVED: AtomicBool = AtomicBool::new(false);
 pub static SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
 pub static SIGUSR1_RECEIVED: AtomicBool = AtomicBool::new(false);
+pub static SIGCONT_RECEIVED: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_sigwinch(_: libc::c_int) {
     SIGWINCH_RECEIVED.store(true, Ordering::Release);
@@ -241,6 +242,10 @@ extern "C" fn on_sigterm(_: libc::c_int) {
 
 extern "C" fn on_sigusr1(_: libc::c_int) {
     SIGUSR1_RECEIVED.store(true, Ordering::Release);
+}
+
+extern "C" fn on_sigcont(_: libc::c_int) {
+    SIGCONT_RECEIVED.store(true, Ordering::Release);
 }
 
 fn install_handler(signo: libc::c_int, handler: usize) {
@@ -272,6 +277,22 @@ pub fn install_sigusr1_handler() {
     install_handler(
         libc::SIGUSR1,
         on_sigusr1 as extern "C" fn(libc::c_int) as usize,
+    );
+}
+
+/// Client-side signal wiring (mosh stmclient): SIGTERM, SIGINT, and SIGHUP
+/// all route to SIGTERM_RECEIVED so the loop winds down and restores the
+/// tty (raw mode clears ISIG, but kill(1) and terminal hangup would
+/// otherwise terminate with the default disposition mid-raw); SIGCONT sets
+/// SIGCONT_RECEIVED so the screen repaints after SIGSTOP/fg.
+pub fn install_client_signal_handlers() {
+    let on_term = on_sigterm as extern "C" fn(libc::c_int) as usize;
+    for signo in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+        install_handler(signo, on_term);
+    }
+    install_handler(
+        libc::SIGCONT,
+        on_sigcont as extern "C" fn(libc::c_int) as usize,
     );
 }
 
