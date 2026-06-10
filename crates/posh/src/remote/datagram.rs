@@ -366,20 +366,7 @@ mod tests {
         assert!(addr.is_ipv6());
         let mut client = Connection::client(addr, &key).unwrap();
         client.send(b"v6 hello").unwrap();
-        for _ in 0..50 {
-            match server.recv() {
-                Ok(Some(p)) => {
-                    assert_eq!(p, b"v6 hello");
-                    return;
-                }
-                Ok(None) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                Err(e) => panic!("recv: {e}"),
-            }
-        }
-        panic!("ipv6 datagram never arrived");
+        assert_eq!(recv_one(&mut server), b"v6 hello");
     }
 
     #[test]
@@ -389,21 +376,8 @@ mod tests {
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
         let mut client = Connection::client(addr, &key).unwrap();
         client.send(b"v4 over auto").unwrap();
-        for _ in 0..50 {
-            match server.recv() {
-                Ok(Some(p)) => {
-                    assert_eq!(p, b"v4 over auto");
-                    assert!(server.has_remote());
-                    return;
-                }
-                Ok(None) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                Err(e) => panic!("recv: {e}"),
-            }
-        }
-        panic!("ipv4 datagram never arrived on the auto-family socket");
+        assert_eq!(recv_one(&mut server), b"v4 over auto");
+        assert!(server.has_remote());
     }
 
     /// Drains one payload out of a nonblocking connection.
@@ -467,39 +441,10 @@ mod tests {
         let mut client = Connection::client(addr, &key).unwrap();
 
         client.send(b"hello").unwrap();
-        // Loopback delivery is immediate but give it a moment.
-        let mut got = None;
-        for _ in 0..50 {
-            match server.recv() {
-                Ok(Some(p)) => {
-                    got = Some(p);
-                    break;
-                }
-                Ok(None) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                Err(e) => panic!("recv: {e}"),
-            }
-        }
-        assert_eq!(got.as_deref(), Some(&b"hello"[..]));
+        assert_eq!(recv_one(&mut server), b"hello");
         assert!(server.has_remote());
 
         server.send(b"world").unwrap();
-        let mut got = None;
-        for _ in 0..50 {
-            match client.recv() {
-                Ok(Some(p)) => {
-                    got = Some(p);
-                    break;
-                }
-                Ok(None) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                Err(e) => panic!("recv: {e}"),
-            }
-        }
-        assert_eq!(got.as_deref(), Some(&b"world"[..]));
+        assert_eq!(recv_one(&mut client), b"world");
     }
 }

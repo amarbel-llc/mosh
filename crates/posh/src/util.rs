@@ -259,13 +259,6 @@ fn install_handler(signo: libc::c_int, handler: usize) {
     }
 }
 
-pub fn install_sigwinch_handler() {
-    install_handler(
-        libc::SIGWINCH,
-        on_sigwinch as extern "C" fn(libc::c_int) as usize,
-    );
-}
-
 pub fn install_sigterm_handler() {
     install_handler(
         libc::SIGTERM,
@@ -280,12 +273,17 @@ pub fn install_sigusr1_handler() {
     );
 }
 
-/// Client-side signal wiring (mosh stmclient): SIGTERM, SIGINT, and SIGHUP
-/// all route to SIGTERM_RECEIVED so the loop winds down and restores the
-/// tty (raw mode clears ISIG, but kill(1) and terminal hangup would
-/// otherwise terminate with the default disposition mid-raw); SIGCONT sets
-/// SIGCONT_RECEIVED so the screen repaints after SIGSTOP/fg.
+/// Client-side signal wiring (mosh stmclient): SIGWINCH flags a resize;
+/// SIGTERM, SIGINT, and SIGHUP all route to SIGTERM_RECEIVED so the loop
+/// winds down and restores the tty (raw mode clears ISIG, but kill(1) and
+/// terminal hangup would otherwise terminate with the default disposition
+/// mid-raw); SIGCONT sets SIGCONT_RECEIVED so the screen repaints after
+/// SIGSTOP/fg.
 pub fn install_client_signal_handlers() {
+    install_handler(
+        libc::SIGWINCH,
+        on_sigwinch as extern "C" fn(libc::c_int) as usize,
+    );
     let on_term = on_sigterm as extern "C" fn(libc::c_int) as usize;
     for signo in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
         install_handler(signo, on_term);

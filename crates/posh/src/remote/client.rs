@@ -100,7 +100,6 @@ fn client_loop(
     prediction: DisplayPreference,
     predict_overwrite: bool,
 ) -> Result<()> {
-    util::install_sigwinch_handler();
     util::install_client_signal_handlers();
     util::set_nonblocking(STDIN)?;
 

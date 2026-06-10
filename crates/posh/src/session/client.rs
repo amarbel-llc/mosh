@@ -125,7 +125,6 @@ impl DetachMatcher {
 }
 
 fn client_loop(stream: UnixStream) -> Result<()> {
-    util::install_sigwinch_handler();
     util::install_client_signal_handlers();
     stream.set_nonblocking(true)?;
     let sock_fd = stream.as_raw_fd();
