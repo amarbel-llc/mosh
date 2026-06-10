@@ -131,6 +131,28 @@ fn dump_vt_chunks_large_graphics_payloads() {
     assert_eq!(r.images()[&3].data, data);
 }
 
+#[test]
+fn dump_vt_preserves_scrollback_grid_wrap_seam() {
+    // A logical line soft-wrapping from the last scrollback row into grid
+    // row 0 must stay joined across a roundtrip (github #22): dump_text
+    // joins on the wrapped flag, so a lost seam splits the line and a
+    // later resize reflows the halves separately.
+    let mut t = Terminal::with_scrollback(3, 10, 10);
+    feed(&mut t, "one\r\ntwo\r\nABCDEFGHIJKLMNOPQRST\r\nend\r\nzzz");
+    // The 20-char line wrapped across two rows; the subsequent prints
+    // scrolled its first half to the bottom of the scrollback, so the
+    // wrap seam now straddles the scrollback/grid boundary.
+    let expect = t.dump_text();
+    assert!(
+        expect.contains("ABCDEFGHIJKLMNOPQRST"),
+        "fixture must hold one joined 20-char line: {expect:?}"
+    );
+
+    let mut r = Terminal::with_scrollback(3, 10, 10);
+    r.process(&t.dump_vt());
+    assert_eq!(r.dump_text(), expect, "wrap seam lost across the roundtrip");
+}
+
 // --- resize reflow ------------------------------------------------------------
 
 #[test]

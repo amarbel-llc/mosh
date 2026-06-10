@@ -169,30 +169,37 @@ impl Terminal {
             out.push_str("\x1b[?1049l");
         }
 
-        // Primary screen: replay scrollback by printing and scrolling it
-        // off, then draw the visible grid in flow order (preserving soft
-        // wrap flags).
+        // Primary screen. With scrollback, replay it and the visible grid
+        // as ONE continuous flow: every soft-wrapped row — including the
+        // last scrollback row, whose seam continues into grid row 0 —
+        // regenerates its wrap flag by actually autowrapping on the
+        // target, and the grid rows printed at the bottom push each
+        // scrollback line up into the target's ring (no padding or homing
+        // needed). The pen drops to default before each scroll-opening
+        // newline because scrolled-in blank lines inherit the pen's
+        // background (BCE). github #22.
         let sb_len = self.primary.scrollback_len();
-        let mut last_wrapped = false;
-        for i in 0..sb_len {
-            let row = self.primary.scrollback_row(i).unwrap();
-            self.emit_row(&mut out, row, &mut st);
-            last_wrapped = row.wrapped();
-            if !last_wrapped {
-                out.push_str("\r\n");
-            }
-        }
         if sb_len > 0 {
-            self.reset_pen(&mut out, &mut st);
-            // Pad with newlines until every replayed line has scrolled
-            // into the target's scrollback.
-            let pad = self.rows() - if last_wrapped { 0 } else { 1 };
-            for _ in 0..pad {
-                out.push('\n');
+            for i in 0..sb_len {
+                let row = self.primary.scrollback_row(i).unwrap();
+                self.emit_row(&mut out, row, &mut st);
+                if !row.wrapped() {
+                    self.reset_pen(&mut out, &mut st);
+                    out.push_str("\r\n");
+                }
             }
+            for r in 0..self.primary.rows() {
+                let row = self.primary.row(r).unwrap();
+                self.emit_row(&mut out, row, &mut st);
+                if !row.wrapped() && r + 1 < self.primary.rows() {
+                    self.reset_pen(&mut out, &mut st);
+                    out.push_str("\r\n");
+                }
+            }
+        } else {
+            out.push_str("\x1b[H");
+            self.draw_grid(&mut out, &self.primary, &mut st);
         }
-        out.push_str("\x1b[H");
-        self.draw_grid(&mut out, &self.primary, &mut st);
 
         if self.alt_active {
             // Park the primary cursor where 1049's save expects it, then
