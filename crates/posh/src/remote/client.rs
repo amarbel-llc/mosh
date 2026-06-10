@@ -93,6 +93,10 @@ struct ClientState {
     shutdown_requested: bool,
     shutdown_requested_at: u64,
     shutdown_seen: bool,
+    /// (applied_num, server_term generation) at the last compose, plus
+    /// whether any overlay was live then — the idle fast-path key. github #35.
+    last_render_state: (u64, u64),
+    last_render_overlays: bool,
 }
 
 fn client_loop(
@@ -126,6 +130,8 @@ fn client_loop(
         shutdown_requested: false,
         shutdown_requested_at: 0,
         shutdown_seen: false,
+        last_render_state: (u64::MAX, u64::MAX),
+        last_render_overlays: false,
     };
     let mut assembly = FragmentAssembly::new();
 
@@ -435,6 +441,34 @@ fn apply_frame(st: &mut ClientState, frame: &ServerFrame) -> bool {
 /// mosh's output_new_frame: server state + prediction overlay + status
 /// banner, diffed against what the tty currently shows.
 fn render(st: &mut ClientState, now: u64) {
+    let bytes = compose_frame(st, now);
+    if !bytes.is_empty() {
+        let _ = util::write_all_retry(STDOUT, &bytes, 1000);
+    }
+}
+
+/// Builds this tick's escape stream (empty when the screen already
+/// matches). Idle ticks skip the full-grid snapshot: with the model
+/// unadvanced, the screen initialized, and no overlay live now or at the
+/// previous compose, the diff is provably empty. Overlays are
+/// time-driven, so "live" includes the lateness banner being DUE
+/// (server_late), not just shown — predictions only change while active,
+/// and a just-cleared overlay still gets one closing compose via
+/// last_render_overlays. github #35.
+fn compose_frame(st: &mut ClientState, now: u64) -> Vec<u8> {
+    let model_state = (st.applied_num, st.server_term.generation());
+    let overlays_live =
+        st.predict.active() || !st.notify.message().is_empty() || st.notify.server_late(now);
+    if st.initialized
+        && model_state == st.last_render_state
+        && !overlays_live
+        && !st.last_render_overlays
+    {
+        return Vec::new();
+    }
+    st.last_render_state = model_state;
+    st.last_render_overlays = overlays_live;
+
     let base = Snapshot::from_term(&st.server_term);
     st.predict.cull(&base, now);
     let mut next = base;
@@ -443,11 +477,9 @@ fn render(st: &mut ClientState, now: u64) {
     st.notify.apply(&mut next, now);
 
     let bytes = display::new_frame(st.initialized, &st.last_drawn, &next);
-    if !bytes.is_empty() {
-        let _ = util::write_all_retry(STDOUT, &bytes, 1000);
-    }
     st.initialized = true;
     st.last_drawn = next;
+    bytes
 }
 
 fn send_message(st: &mut ClientState) {
@@ -496,13 +528,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn deccolm_frame_does_not_resize_local_model_past_tty_width() {
+    /// ClientState over a throwaway loopback connection, for unit tests
+    /// of frame application and composition.
+    fn test_state(rows: u16, cols: u16) -> ClientState {
         let key = Key::random();
         let conn = Connection::client("127.0.0.1:9".parse().unwrap(), &key).unwrap();
-        let now = now_ms();
-        let (rows, cols) = (24u16, 80u16);
-        let mut st = ClientState {
+        ClientState {
             conn,
             fragmenter: Fragmenter::new(),
             outbox: InputOutbox::new(),
@@ -516,12 +547,68 @@ mod tests {
             last_drawn: Snapshot::blank(rows, cols),
             initialized: false,
             predict: PredictionEngine::new(DisplayPreference::Never, false),
-            notify: NotificationEngine::new(now),
+            notify: NotificationEngine::new(0),
             quit_pending: false,
             shutdown_requested: false,
             shutdown_requested_at: 0,
             shutdown_seen: false,
+            last_render_state: (u64::MAX, u64::MAX),
+            last_render_overlays: false,
+        }
+    }
+
+    #[test]
+    fn compose_skips_idle_ticks_but_not_time_driven_banners() {
+        // github #35: idle ticks must not rebuild the full-grid snapshot —
+        // but the skip may never eat time-driven output: the lateness
+        // banner appears (and counts up) without any model change.
+        let mut st = test_state(3, 30);
+        assert!(
+            !compose_frame(&mut st, 0).is_empty(),
+            "first compose paints from scratch"
+        );
+        assert!(
+            compose_frame(&mut st, 100).is_empty(),
+            "idle tick composes nothing"
+        );
+        let late = compose_frame(&mut st, 10_000);
+        assert!(
+            String::from_utf8_lossy(&late).contains("Last contact"),
+            "lateness banner must survive the idle fast path: {late:?}"
+        );
+        assert!(
+            !compose_frame(&mut st, 11_000).is_empty(),
+            "banner count-up keeps rendering"
+        );
+    }
+
+    #[test]
+    fn compose_renders_on_applied_frames() {
+        let mut st = test_state(3, 20);
+        let _ = compose_frame(&mut st, 0);
+        let frame = ServerFrame {
+            flags: 0,
+            frame_num: 1,
+            input_ack: 0,
+            echo_ack: 0,
+            body: FrameBody::Full(b"hello".to_vec()),
         };
+        assert!(apply_frame(&mut st, &frame));
+        let bytes = compose_frame(&mut st, 10);
+        assert!(
+            String::from_utf8_lossy(&bytes).contains("hello"),
+            "applied frame must compose: {bytes:?}"
+        );
+        assert!(
+            compose_frame(&mut st, 20).is_empty(),
+            "and the tick after it is idle again"
+        );
+    }
+
+    #[test]
+    fn deccolm_frame_does_not_resize_local_model_past_tty_width() {
+        let mut st = test_state(24, 80);
+        let (rows, cols) = (24u16, 80u16);
 
         // Server dump replaying 132-column mode (DECSET 40 allows DECCOLM,
         // DECSET 3 switches): the local model must stay at the tty size or
