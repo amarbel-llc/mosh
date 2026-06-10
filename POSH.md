@@ -51,9 +51,10 @@ relies on fully supported:
   XTWINOPS 14/16/18.
 - Serialization: `dump_text()` (plain text including scrollback) and
   `dump_vt()` (an escape stream that reconstructs contents, attributes,
-  cursor, modes, title, and scroll region on a real terminal — verified by
-  roundtrip tests). This is what powers session replay on attach and remote
-  state sync.
+  cursor, modes, title, scroll region, and kitty graphics — images,
+  placements, animation frames — on a real terminal, verified by roundtrip
+  tests). This is what powers session replay on attach and remote state
+  sync.
 
 Also implemented: reflow on resize (logical lines rewrap via wrap flags,
 wide-char aware, scrollback included; alt screen truncates/pads like kitty),
@@ -125,7 +126,8 @@ against server echo-acks, adaptive display with mosh's SRTT/glitch/flagging
 constants, and underlined predictions when the link is slow
 (`POSH_PREDICTION`: always/never/adaptive/experimental). A reverse-video
 "Last contact N seconds ago" banner appears after 6.5s of silence; the quit
-sequence is Ctrl-^ then `.`. Servers bind dual-stack IPv6 when possible,
+sequence is Ctrl-^ then `.` (Ctrl-^ Ctrl-Z suspends the client). Servers
+bind dual-stack IPv6 when possible,
 report `POSH IP` from `$SSH_CONNECTION` for the ssh wrapper, require UTF-8
 locales on both ends (forwarding LANG/LC_* over ssh), and honor
 `POSH_SERVER_NETWORK_TMOUT` / `POSH_SERVER_SIGNAL_TMOUT`.
@@ -141,8 +143,9 @@ zlib; no utmp/motd integration.
 ## Building and testing
 
 ```
-cargo build --workspace
-cargo test  --workspace
+nix build .#posh            # hermetic build + cargo test --workspace
+just build-rust             # same, via the justfile lane
+just debug-cargo test --workspace   # fast in-worktree dev-loop
 ```
 
 The workspace builds warning-free and carries ~400 tests (parser state
