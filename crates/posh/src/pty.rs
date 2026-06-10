@@ -127,6 +127,18 @@ pub struct RawMode {
     orig: libc::termios,
 }
 
+fn raw_termios(orig: &libc::termios) -> libc::termios {
+    let mut raw = *orig;
+    unsafe { libc::cfmakeraw(&mut raw) };
+    // _POSIX_VDISABLE: free Ctrl-V (literal-next) and Ctrl-\ (SIGQUIT)
+    // so the latter can be used as the detach key.
+    raw.c_cc[libc::VLNEXT] = 0;
+    raw.c_cc[libc::VQUIT] = 0;
+    raw.c_cc[libc::VMIN] = 1;
+    raw.c_cc[libc::VTIME] = 0;
+    raw
+}
+
 impl RawMode {
     pub fn enable(fd: RawFd) -> Result<RawMode> {
         unsafe {
@@ -134,18 +146,25 @@ impl RawMode {
             if libc::tcgetattr(fd, &mut orig) != 0 {
                 return Err(Error("not a terminal".to_string()));
             }
-            let mut raw = orig;
-            libc::cfmakeraw(&mut raw);
-            // _POSIX_VDISABLE: free Ctrl-V (literal-next) and Ctrl-\ (SIGQUIT)
-            // so the latter can be used as the detach key.
-            raw.c_cc[libc::VLNEXT] = 0;
-            raw.c_cc[libc::VQUIT] = 0;
-            raw.c_cc[libc::VMIN] = 1;
-            raw.c_cc[libc::VTIME] = 0;
-            if libc::tcsetattr(fd, libc::TCSANOW, &raw) != 0 {
+            if libc::tcsetattr(fd, libc::TCSANOW, &raw_termios(&orig)) != 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
             Ok(RawMode { fd, orig })
+        }
+    }
+
+    /// Temporarily restores the original termios (suspend); pair with
+    /// [`RawMode::reapply`] on resume.
+    pub fn restore(&self) {
+        unsafe {
+            libc::tcsetattr(self.fd, libc::TCSANOW, &self.orig);
+        }
+    }
+
+    /// Re-enters raw mode after [`RawMode::restore`] (resume from suspend).
+    pub fn reapply(&self) {
+        unsafe {
+            libc::tcsetattr(self.fd, libc::TCSANOW, &raw_termios(&self.orig));
         }
     }
 }

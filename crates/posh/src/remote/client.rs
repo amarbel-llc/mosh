@@ -25,7 +25,7 @@ const SHUTDOWN_GRACE: u64 = 5000; // ms to wait for the shutdown ack
 /// The escape (quit-sequence) key: Ctrl-^ (0x1E), as in mosh.
 const ESCAPE_KEY: u8 = 0x1e;
 const ESCAPE_PASS_KEY: u8 = b'^';
-const ESCAPE_KEY_HELP: &str = "Commands: \".\" quits, \"^\" gives literal Ctrl-^";
+const ESCAPE_KEY_HELP: &str = "Commands: Ctrl-Z suspends, \".\" quits, \"^\" gives literal Ctrl-^";
 
 pub fn run(host: &str, port: u16, family: Family) -> Result<()> {
     util::check_utf8_locale("posh-client")?;
@@ -47,7 +47,7 @@ pub fn run(host: &str, port: u16, family: Family) -> Result<()> {
     let conn = Connection::client(addr, &key)?;
 
     let raw = RawMode::enable(STDIN)?;
-    let result = client_loop(conn, prediction, predict_overwrite);
+    let result = client_loop(conn, prediction, predict_overwrite, &raw);
     let _ = util::write_all_retry(STDOUT, display::close(), 1000);
     drop(raw);
     eprintln!("\nposh: [client exited]");
@@ -99,6 +99,7 @@ fn client_loop(
     conn: Connection,
     prediction: DisplayPreference,
     predict_overwrite: bool,
+    raw: &RawMode,
 ) -> Result<()> {
     util::install_client_signal_handlers();
     util::set_nonblocking(STDIN)?;
@@ -186,7 +187,7 @@ fn client_loop(
                     send_now = true;
                 }
                 Ok(n) => {
-                    if process_user_input(&mut st, &buf[..n]) {
+                    if process_user_input(&mut st, &buf[..n], raw) {
                         send_now = true;
                     }
                 }
@@ -243,6 +244,22 @@ fn client_loop(
     }
 }
 
+/// mosh stmclient.cc suspend sequence: restore the outer terminal and the
+/// tty driver, stop our process group, and on SIGCONT re-enter raw mode and
+/// force a full repaint.
+fn suspend(st: &mut ClientState, raw: &RawMode) {
+    let _ = util::write_all_retry(STDOUT, display::close(), 1000);
+    raw.restore();
+    let _ = util::write_all_retry(STDOUT, b"\r\n\x1b[37;44m[posh is suspended.]\x1b[m\r\n", 1000);
+    unsafe {
+        libc::kill(0, libc::SIGSTOP);
+    }
+    // Execution resumes here after SIGCONT (fg).
+    raw.reapply();
+    st.predict.reset();
+    st.initialized = false;
+}
+
 fn request_shutdown(st: &mut ClientState) {
     if !st.shutdown_requested {
         st.shutdown_requested = true;
@@ -256,7 +273,7 @@ fn request_shutdown(st: &mut ClientState) {
 /// Feeds user bytes through the Ctrl-^ quit-sequence state machine, the
 /// prediction engine, and into the reliable input stream. Returns true when
 /// anything needs sending.
-fn process_user_input(st: &mut ClientState, buf: &[u8]) -> bool {
+fn process_user_input(st: &mut ClientState, buf: &[u8], raw: &RawMode) -> bool {
     let now = now_ms();
     // Don't predict for bulk pastes.
     let paste = buf.len() > 100;
@@ -281,6 +298,11 @@ fn process_user_input(st: &mut ClientState, buf: &[u8]) -> bool {
                     request_shutdown(st);
                     dirty = true;
                     continue;
+                }
+                0x1a => {
+                    // Ctrl-^ Ctrl-Z: suspend the client (mosh suspend
+                    // sequence), not the remote foreground job.
+                    suspend(st, raw);
                 }
                 ESCAPE_KEY | ESCAPE_PASS_KEY => {
                     // Ctrl-^ twice (or Ctrl-^ ^) sends a literal Ctrl-^.
