@@ -5,6 +5,7 @@
 use posh_term::Terminal;
 
 use crate::pty;
+use crate::remote::caps;
 use crate::remote::crypto::Key;
 use crate::remote::datagram::{Connection, Family, DEFAULT_PORT_RANGE, SEND_INTERVAL_MIN};
 use crate::remote::sync::{
@@ -111,6 +112,10 @@ fn server_loop(mut conn: Connection, child: pty::PtyChild, rows: u16, cols: u16)
     let mut pty_open = true;
     let mut shutdown = false;
     let mut shutdown_at: u64 = 0;
+    // EXIT_STATUS (RFC 0001 §3): the command's shell-style exit code, and
+    // whether the peer ever advertised understanding the capability.
+    let mut exit_status: Option<i32> = None;
+    let mut peer_wants_exit = false;
     let mut force_ack = false;
     // Set when the shell exits: forces one final frame (with FLAG_SHUTDOWN)
     // that the client must ack before we go away.
@@ -195,7 +200,7 @@ fn server_loop(mut conn: Connection, child: pty::PtyChild, rows: u16, cols: u16)
                 shutdown = true;
                 shutdown_at = now_ms();
                 force_frame = true;
-                let _ = util::try_reap(child.pid);
+                exit_status = util::try_reap(child.pid).map(util::exit_code);
             }
         }
 
@@ -214,6 +219,9 @@ fn server_loop(mut conn: Connection, child: pty::PtyChild, rows: u16, cols: u16)
                             continue;
                         };
                         last_heard = now_ms();
+                        if caps::find(&msg.caps, caps::CAP_EXIT_STATUS).is_some() {
+                            peer_wants_exit = true;
+                        }
                         handle_client_message(
                             &msg,
                             &mut term,
@@ -313,9 +321,26 @@ fn server_loop(mut conn: Connection, child: pty::PtyChild, rows: u16, cols: u16)
                         None => FrameBody::Full(current.data.clone()),
                     }
                 };
+                if shutdown && exit_status.is_none() {
+                    // The shell may not have been reapable at pty close
+                    // (client-requested shutdown SIGHUPs it); retry as the
+                    // handshake frames go out.
+                    exit_status = util::try_reap(child.pid).map(util::exit_code);
+                }
+                let frame_caps = match exit_status {
+                    // Only peers that advertised the capability may
+                    // receive its payload (RFC 0001 §3).
+                    Some(code) if shutdown && peer_wants_exit => {
+                        caps::own_table(&[caps::Cap {
+                            id: caps::CAP_EXIT_STATUS,
+                            payload: vec![code.clamp(0, 255) as u8],
+                        }])
+                    }
+                    _ => Vec::new(),
+                };
                 let frame = ServerFrame {
                     flags: if shutdown { sync::FLAG_SHUTDOWN } else { 0 },
-                    caps: vec![], // populated when EXIT_STATUS lands (plan task 6)
+                    caps: frame_caps,
                     frame_num: current.num,
                     input_ack: inbox.next_offset(),
                     echo_ack: echo.ack(),

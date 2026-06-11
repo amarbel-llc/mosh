@@ -8,6 +8,7 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use posh_term::Terminal;
 
 use crate::pty::{self, RawMode};
+use crate::remote::caps;
 use crate::remote::crypto::Key;
 use crate::remote::datagram::{Connection, Family};
 use crate::remote::display::{self, NotificationEngine, Snapshot};
@@ -51,7 +52,13 @@ pub fn run(host: &str, port: u16, family: Family) -> Result<()> {
     let _ = util::write_all_retry(STDOUT, display::close(), 1000);
     drop(raw);
     eprintln!("\nposh: [client exited]");
-    result
+    // Carry the remote session's exit status (EXIT_STATUS capability,
+    // RFC 0001 §3) into our own, mirroring the local attach path (#18).
+    match result {
+        Ok(0) => Ok(()),
+        Ok(code) => std::process::exit(code),
+        Err(e) => Err(e),
+    }
 }
 
 fn resolve(host: &str, port: u16, family: Family) -> Result<SocketAddr> {
@@ -93,6 +100,9 @@ struct ClientState {
     shutdown_requested: bool,
     shutdown_requested_at: u64,
     shutdown_seen: bool,
+    /// Remote session exit code from the EXIT_STATUS capability on the
+    /// shutdown frame; 0 against baseline servers or on user-quit.
+    exit_status: i32,
     /// (applied_num, server_term generation) at the last compose, plus
     /// whether any overlay was live then — the idle fast-path key. github #35.
     last_render_state: (u64, u64),
@@ -105,7 +115,7 @@ fn client_loop(
     predict_overwrite: bool,
     raw: &RawMode,
     port: u16,
-) -> Result<()> {
+) -> Result<i32> {
     util::install_client_signal_handlers();
     util::set_nonblocking(STDIN)?;
 
@@ -130,6 +140,7 @@ fn client_loop(
         shutdown_requested: false,
         shutdown_requested_at: 0,
         shutdown_seen: false,
+        exit_status: 0,
         last_render_state: (u64::MAX, u64::MAX),
         last_render_overlays: false,
     };
@@ -280,10 +291,10 @@ fn client_loop(
         if st.shutdown_seen {
             // Shell exited (or our quit was acknowledged); the final-state
             // ack went out just above.
-            return Ok(());
+            return Ok(st.exit_status);
         }
         if st.shutdown_requested && now.saturating_sub(st.shutdown_requested_at) >= SHUTDOWN_GRACE {
-            return Ok(()); // server unreachable; leave anyway
+            return Ok(0); // server unreachable; leave anyway
         }
     }
 }
@@ -391,6 +402,13 @@ fn process_frame(st: &mut ClientState, frame: &ServerFrame) -> bool {
     st.predict.set_send_interval(st.conn.send_interval());
     if frame.flags & sync::FLAG_SHUTDOWN != 0 {
         st.shutdown_seen = true;
+        // EXIT_STATUS rides the shutdown frame's capability table; the
+        // server only sends it because we advertised it (RFC 0001 §3).
+        if let Some(cap) = caps::find(&frame.caps, caps::CAP_EXIT_STATUS) {
+            if let Some(&code) = cap.payload.first() {
+                st.exit_status = code as i32;
+            }
+        }
     }
     apply_frame(st, frame)
 }
@@ -483,7 +501,12 @@ fn compose_frame(st: &mut ClientState, now: u64) -> Vec<u8> {
 fn send_message(st: &mut ClientState) {
     let msg = ClientMessage {
         flags: st.flags,
-        caps: vec![], // populated when EXIT_STATUS lands (plan task 6)
+        // Advertised in every message (the protocol is connectionless):
+        // protocol version plus "I understand exit-status frames".
+        caps: caps::own_table(&[caps::Cap {
+            id: caps::CAP_EXIT_STATUS,
+            payload: vec![],
+        }]),
         acked_frame: st.applied_num,
         rows: st.rows,
         cols: st.cols,
@@ -551,6 +574,7 @@ mod tests {
             shutdown_requested: false,
             shutdown_requested_at: 0,
             shutdown_seen: false,
+            exit_status: 0,
             last_render_state: (u64::MAX, u64::MAX),
             last_render_overlays: false,
         }

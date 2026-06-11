@@ -359,3 +359,95 @@ fn remote_client_exits_cleanly_on_sigterm() {
         "SIGTERM must wind down via the shutdown handshake, got {status:?}"
     );
 }
+
+/// Starts a detached `posh server` with `command`, parses POSH CONNECT, and
+/// returns (port, key).
+fn start_server(port_range: &str, command: &[&str], envs: &[(&str, &str)]) -> (String, String) {
+    let mut cmd = posh_cmd();
+    cmd.args(["server", "-p", port_range, "--"])
+        .args(command)
+        .env("LC_ALL", "C.UTF-8")
+        .env("POSH_SERVER_NETWORK_TMOUT", "30");
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().unwrap();
+    assert!(out.status.success(), "server failed: {out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let connect = stdout
+        .lines()
+        .find(|l| l.starts_with("POSH CONNECT "))
+        .unwrap_or_else(|| panic!("no POSH CONNECT line in {stdout:?}"));
+    let mut fields = connect.split_whitespace().skip(2);
+    (
+        fields.next().expect("port").to_string(),
+        fields.next().expect("key").to_string(),
+    )
+}
+
+/// Drives a client against `port`, presses Enter to release the remote
+/// command, and returns the client's exit status.
+fn drive_client_to_exit(port: &str, key: &str) -> std::process::ExitStatus {
+    let (master, slave) = open_pty_pair();
+    let mut cmd = posh_cmd();
+    cmd.args(["client", "127.0.0.1", port])
+        .env("LC_ALL", "C.UTF-8")
+        .env("POSH_KEY", key);
+    let mut child = spawn_on_pty(&mut cmd, slave);
+    wait_for_pty_output(master, "remote client first paint");
+    let nl = [b'\r'];
+    unsafe { libc::write(master, nl.as_ptr() as *const libc::c_void, 1) };
+    wait_for_exit(&mut child, master, 20)
+}
+
+#[test]
+fn remote_exit_status_propagates_over_udp() {
+    // RFC 0001 §3 EXIT_STATUS: the server carries the command's
+    // shell-style exit code on its shutdown frames and the client process
+    // exits with it — `posh box; echo $?` is truthful.
+    let (port, key) = start_server("62800:62849", &["/bin/sh", "-c", "read line; exit 7"], &[]);
+    let status = drive_client_to_exit(&port, &key);
+    assert_eq!(
+        status.code(),
+        Some(7),
+        "remote exit status lost over the transport: {status:?}"
+    );
+}
+
+#[test]
+fn remote_session_attach_carries_exit_status_end_to_end() {
+    // The host:session composition (RFC 0001 §2): the transport server
+    // wraps an inner `posh attach`; the session shell's code must pass
+    // through BOTH layers — the daemon's Exit frame (#18), then the
+    // EXIT_STATUS capability over UDP.
+    let dir = test_posh_dir("posh-remote-attach");
+    let out = posh_cmd()
+        .args([
+            "attach",
+            "--detach",
+            "dev",
+            "/bin/sh",
+            "-c",
+            "read line; exit 7",
+        ])
+        .env("POSH_DIR", &dir)
+        .env_remove("POSH_SESSION")
+        .env_remove("POSH_GROUP")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "attach --detach failed: {out:?}");
+
+    let dir_str = dir.to_str().unwrap().to_string();
+    let (port, key) = start_server(
+        "62850:62899",
+        &[env!("CARGO_BIN_EXE_posh"), "attach", "dev"],
+        &[("POSH_DIR", dir_str.as_str())],
+    );
+    let status = drive_client_to_exit(&port, &key);
+    assert_eq!(
+        status.code(),
+        Some(7),
+        "session exit status lost through the composition: {status:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
