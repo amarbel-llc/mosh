@@ -76,6 +76,20 @@ test-rust:
 run-nix *ARGS:
     nix run . -- {{ ARGS }}
 
+# Build and run posht: locally with no arguments, or on <host> (cross-
+# compile + scp + run via posh ssh) when a host is given. Extra args go
+# to posht; for local args pass an empty host: `just run-posht '' --list`.
+[group("operational")]
+run-posht host="" *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd '{{ justfile_directory() }}'
+    if [ -n '{{ host }}' ]; then
+      exec nix shell nixpkgs#go --command posht/run-remote.sh '{{ host }}' {{ ARGS }}
+    fi
+    nix shell nixpkgs#go --command bash -c 'cd posht && go build -o posht .'
+    exec posht/posht {{ ARGS }}
+
 # --- codemod ---------------------------------------------------------------
 
 codemod-fmt: codemod-fmt-treefmt
