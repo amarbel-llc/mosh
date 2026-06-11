@@ -172,7 +172,9 @@ and emits OSC 8 hyperlinks.
 
 Known simplifications relative to mosh: frames carry `dump_vt()` state (or
 a prefix/suffix diff) rather than mosh's SSP protobuf instructions with
-zlib; no utmp/motd integration.
+zlib; no utmp/motd integration. The full parity contract — what is
+mirrored, what is deliberately dropped, and the open gaps — is FDR 0003
+(`docs/features/`), with the living checklist in issue #44.
 
 ## Building and testing
 
