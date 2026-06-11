@@ -72,18 +72,24 @@ enum Target {
 Resolution MUST apply these rules in order; the first match wins:
 
 1. **Explicit local.** An argument beginning with `:` resolves to
-   `Local` with the remainder parsed per rule 5. The remainder MUST be
-   non-empty; a bare `:` is `LocalSession { name: ":" }`.
+   `Local` with the remainder parsed per rule 5. The remainder MUST be a
+   valid session part (non-empty, containing no `:`) — otherwise the
+   argument falls through to rule 3 (IPv6 literals such as `::1` resolve
+   there to `Host` via their empty head). A bare `:` is
+   `LocalSession { name: ":" }`.
 2. **Bracketed host.** An argument beginning with `[` up to a matching
    `]` is a host literal (IPv6-safe). A `:suffix` after the bracket, if
    non-empty, resolves to `RemoteSession` (suffix parsed per rule 5);
    otherwise the argument resolves to `Host`. An unterminated `[` falls
    through to rule 3.
 3. **First-colon split.** For an argument containing `:`, split at the
-   FIRST colon into a head and a session part. If the session part is
-   non-empty and contains no `:`, the target is `RemoteSession` (head
-   parsed per rule 4, session part per rule 5). Otherwise the whole
-   argument is `Host` (head parsed per rule 4 against the full string).
+   FIRST colon into a head and a session part. If the head and session
+   part are non-empty and the session part contains no `:`, the target is
+   `RemoteSession` (head parsed per rule 4, session part per rule 5).
+   Otherwise the argument is `Host`: an empty session part is a bare
+   trailing colon and is dropped (`box:` is the host `box`); a session
+   part containing `:` belongs to an IPv6 literal, so the full string is
+   the host. The host token is parsed per rule 4 either way.
 4. **user@ split.** Within a host token, text before the first `@` is
    the optional user; the remainder is the host.
 5. **group/ split.** Within a session part, text before the FIRST `/`
@@ -126,8 +132,12 @@ To attach to `RemoteSession { user, host, group, session }`, a client
 MUST execute, over ssh to `[user@]host`:
 
 ```
-[locale-env-prefixes] posh-server new [-4|-6] [-p RANGE] -- posh attach [-g GROUP] SESSION
+[locale-env-prefixes] posh-server new [-4|-6] [-p RANGE] -- posh [-g GROUP] attach SESSION [command...]
 ```
+
+(`-g` is a global posh option and precedes the subcommand; trailing
+arguments become the create-command, mirroring local
+`posh attach <name> [command...]`.)
 
 - The session, group, and any forwarded environment values MUST be
   shell-quoted such that arbitrary names survive the ssh hop losslessly.

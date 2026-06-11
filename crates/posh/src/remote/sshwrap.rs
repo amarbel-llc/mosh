@@ -238,6 +238,25 @@ mod tests {
     }
 
     #[test]
+    fn remote_session_attach_composition_quotes_inner_argv() {
+        // RFC 0001 §2: `posh host:grp/my dev` rides as the server's
+        // command, every element shell-quoted (lossless argv, as in fork).
+        let opts = SshOptions {
+            family: Family::Auto,
+            port_range: None,
+        };
+        let inner: Vec<String> = ["posh", "-g", "grp", "attach", "my dev"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let cmd = remote_command(&opts, &inner, &[]);
+        assert_eq!(
+            cmd,
+            "posh-server new -- 'posh' '-g' 'grp' 'attach' 'my dev'"
+        );
+    }
+
+    #[test]
     fn remote_command_includes_flags_and_locale() {
         let opts = SshOptions {
             family: Family::Inet6,

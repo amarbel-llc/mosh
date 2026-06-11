@@ -7,6 +7,7 @@ mod completions;
 mod pty;
 mod remote;
 mod session;
+mod target;
 mod util;
 
 use remote::datagram::Family;
@@ -116,17 +117,27 @@ fn run() -> Result<()> {
         "server" => cmd_server(args),
         "client" => cmd_client(args),
         "ssh" => cmd_ssh(args),
-        name if !name.starts_with('-') => {
-            if looks_like_ssh_destination(name) {
-                // mosh parity: `posh [user@]host [-- command...]` connects
-                // remotely over ssh + encrypted UDP.
-                cmd_ssh(rest)
-            } else {
-                // Bare `posh <name>` attaches (creating the session if
-                // needed).
-                cmd_attach(&group, rest)
+        name if !name.starts_with('-') => match target::Target::parse(name) {
+            // Bare `posh <name>` attaches (creating the session if needed).
+            target::Target::LocalSession { .. } => cmd_attach(&group, rest),
+            // `posh :grp/dev` — explicit local, with optional group.
+            target::Target::Local { group: g, session } => {
+                let mut args = vec![session];
+                args.extend_from_slice(&rest[1..]);
+                cmd_attach(&g.unwrap_or(group), &args)
             }
-        }
+            // mosh parity: `posh [user@]host [-- command...]` connects
+            // remotely over ssh + encrypted UDP.
+            target::Target::Host { .. } => cmd_ssh(rest),
+            // `posh host:grp/dev` — persistent remote session over the
+            // roaming transport (RFC 0001 §2).
+            target::Target::RemoteSession {
+                user,
+                host,
+                group: g,
+                session,
+            } => cmd_ssh_session(user, host, g, session, &rest[1..]),
+        },
         flag => Err(Error(format!("unknown option {flag} (see posh help)"))),
     }
 }
@@ -236,13 +247,42 @@ fn cmd_client(args: &[String]) -> Result<()> {
     remote::client::run(host, port, family)
 }
 
-/// mosh-style dispatch for a bare first argument: host-shaped strings
-/// (`user@host`, `host.domain`, IPv6 literals / `host:` forms) connect
-/// remotely; bare words remain local session names (attach-or-create).
-/// Dotted or @-containing SESSION names need explicit `posh attach`;
-/// bare-word ssh aliases need explicit `posh ssh`.
-fn looks_like_ssh_destination(arg: &str) -> bool {
-    arg.contains('@') || arg.contains('.') || arg.contains(':')
+/// `posh [user@]host:[group/]session` (RFC 0001 §2): attach to (creating
+/// if needed) a persistent session on the host, transported over the
+/// roaming UDP connection. Composes the two halves of posh: the remote
+/// command is `posh-server new -- posh [-g GROUP] attach SESSION
+/// [command...]`, so persistence lives in the remote session daemon and
+/// this transport pair stays disposable.
+fn cmd_ssh_session(
+    user: Option<String>,
+    host: String,
+    group: Option<String>,
+    session: String,
+    extra: &[String],
+) -> Result<()> {
+    let mut inner: Vec<String> = vec!["posh".into()];
+    if let Some(g) = &group {
+        inner.push("-g".into());
+        inner.push(g.clone());
+    }
+    inner.push("attach".into());
+    inner.push(session);
+    // Anything after the target becomes the create-command, mirroring
+    // `posh attach <name> [command...]` locally.
+    let mut extra = extra;
+    if extra.first().map(|s| s.as_str()) == Some("--") {
+        extra = &extra[1..];
+    }
+    inner.extend_from_slice(extra);
+    let dest = match &user {
+        Some(u) => format!("{u}@{host}"),
+        None => host,
+    };
+    let opts = remote::sshwrap::SshOptions {
+        family: Family::Auto,
+        port_range: None,
+    };
+    remote::sshwrap::run(&dest, &inner, &opts)
 }
 
 fn cmd_ssh(args: &[String]) -> Result<()> {
@@ -290,9 +330,12 @@ NAME
 SYNOPSIS
     posh [-g GROUP] <command> [args]
     posh <name>                       (shorthand for: posh attach <name>)
-    posh [user@]host [-- command...]  (shorthand for: posh ssh ...; a bare
-                                       first argument containing @ . or :
-                                       is treated as an ssh destination)
+    posh :[group/]session             (explicit local attach)
+    posh [user@]host [-- command...]  (shorthand for: posh ssh ...)
+    posh [user@]host:[group/]session [command...]
+                                      (persistent session on the host over
+                                       the roaming transport; scp-style —
+                                       brackets for IPv6: [fe80::1]:dev)
 
 GLOBAL OPTIONS
     -g, --group GROUP
@@ -399,18 +442,6 @@ mod tests {
     }
 
     #[test]
-    fn ssh_destination_heuristic() {
-        // mosh-parity dispatch: host-shaped bare args go remote, bare
-        // words stay session names.
-        assert!(looks_like_ssh_destination("user@host"));
-        assert!(looks_like_ssh_destination("host.example.com"));
-        assert!(looks_like_ssh_destination("fe80::1"));
-        assert!(!looks_like_ssh_destination("dev"));
-        assert!(!looks_like_ssh_destination("my-session"));
-        assert!(!looks_like_ssh_destination("scratch2"));
-    }
-
-    #[test]
     fn help_covers_all_commands_and_env() {
         for needle in [
             "attach",
@@ -443,5 +474,8 @@ mod tests {
         assert!(HELP.contains("--json"));
         assert!(HELP.contains("-4|-6"));
         assert!(HELP.contains("Ctrl-^"));
+        // RFC 0001 namespace forms.
+        assert!(HELP.contains("host:[group/]session"));
+        assert!(HELP.contains(":[group/]session"));
     }
 }
