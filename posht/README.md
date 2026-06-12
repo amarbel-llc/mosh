@@ -8,14 +8,18 @@ posh stack claims to support — colors, attributes, wide chars, wrap,
 scroll regions, mouse, paste, OSC title/clipboard/hyperlinks, kitty
 graphics — rendering each one and asking you to confirm what you see.
 It opens with a checklist you can deselect from, records pass/fail/skip
-per feature, and prints a markdown report on exit (non-zero status if
-anything failed).
+per feature, and writes a JSON receipt on exit (non-zero status if
+anything failed). By default the receipt lands in
+`~/.local/log/posht/<datetime>-<terminal>.json` and posht prints that
+path; `--json -` puts the JSON on stdout instead.
 
 ```sh
-go build .          # needs Go ≥ 1.25 (the toolchain auto-fetches)
-./posht             # local baseline run
+nix build .#posht   # hermetic build → ./result-posht/bin/posht
+go build .          # fast dev-loop; needs Go ≥ 1.25 (the toolchain auto-fetches)
+./posht             # local baseline run; prints the receipt path on exit
 ./posht --list      # test ids, for --only / --skip
-./posht -o report.md
+./posht --json -    # JSON receipt to stdout
+./posht -o report.md # also write the markdown report to a file
 ```
 
 Run it three ways and diff the reports: directly in your terminal

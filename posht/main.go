@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -26,6 +27,8 @@ func main() {
 	only := flag.String("only", "", "comma-separated test IDs: select just these")
 	skip := flag.String("skip", "", "comma-separated test IDs: start deselected")
 	out := flag.String("o", "", "also write the markdown report to this file")
+	jsonOut := flag.String("json", "", "JSON receipt destination: a file path, \"-\" for stdout, "+
+		"or omit for the default ~/.local/log/posht/<datetime>-<term>.json")
 	ver := flag.Bool("version", false, "print version, then exit")
 	flag.Parse()
 
@@ -57,10 +60,45 @@ func main() {
 	if !root.ran {
 		return // quit from the checklist; nothing to report
 	}
-	rep := reportMD(tests)
-	fmt.Print(rep)
+
+	// Walk the process ancestry once and share it between the receipt body
+	// and the default filename (which derives the real terminal from it).
+	tree := processTree()
+
+	// Resolve the JSON receipt destination:
+	//   --json -      → stdout (and suppress the markdown report there)
+	//   --json <path> → that file
+	//   (omitted)     → the default ~/.local/log/posht/<datetime>-<term>.json
+	// so every run leaves a machine-readable trail without being asked.
+	jsonDest := *jsonOut
+	if jsonDest == "" {
+		jsonDest = defaultReceiptPath(tree) // "" only if $HOME can't be resolved
+	}
+
+	// stdout is the receipt: its JSON when asked for inline (--json -), else
+	// just the path it was written to (the useful handle — the contents are
+	// in the file). The markdown report is no longer auto-dumped to stdout;
+	// it is produced only when -o asks for it.
+	rec := reportJSON(tests, root.details, tree)
+	switch jsonDest {
+	case "-":
+		fmt.Print(rec)
+	case "":
+		fmt.Fprintln(os.Stderr, "posht: no home dir for default receipt; skipping JSON (use --json -)")
+	default:
+		if err := os.MkdirAll(filepath.Dir(jsonDest), 0o755); err != nil {
+			fmt.Fprintln(os.Stderr, "posht: create receipt dir:", err)
+			os.Exit(1)
+		}
+		if err := os.WriteFile(jsonDest, []byte(rec), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, "posht: write json receipt:", err)
+			os.Exit(1)
+		}
+		fmt.Println(jsonDest)
+	}
+
 	if *out != "" {
-		if err := os.WriteFile(*out, []byte(rep), 0o644); err != nil {
+		if err := os.WriteFile(*out, []byte(reportMD(tests)), 0o644); err != nil {
 			fmt.Fprintln(os.Stderr, "posht: write report:", err)
 			os.Exit(1)
 		}

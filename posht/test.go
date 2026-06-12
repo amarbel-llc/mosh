@@ -40,6 +40,12 @@ type capturer interface{ Capturing() bool }
 // reporting, cursor shape, window title) and must undo it on the way out.
 type cleaner interface{ Cleanup() tea.Cmd }
 
+// reporter is implemented by tests that gather structured data worth
+// carrying in the JSON receipt beyond a pass/fail verdict (e.g. altscroll's
+// per-mode wheel tallies). The returned value is attached under the test's
+// ID in the receipt's "details" map; nil contributes nothing.
+type reporter interface{ Report() any }
+
 type Test struct {
 	ID, Title string
 	Desc      string // one-liner for the checklist
@@ -115,6 +121,15 @@ func registry() []*Test {
 			Notes: "wheel behavior at a shell prompt is alternate-scroll territory " +
 				"(mode 1007, posh#3/#28); here events should arrive as wheel up/down",
 			New: func() TestModel { return &mouseModel{} },
+		},
+		{
+			ID: "altscroll", Title: "alternate scroll",
+			Desc: "what governs wheel→arrows on the alt screen: walks 1007-off/1007-on/mouse-grab/all-off",
+			Notes: "the wheel-becomes-arrows symptom (posh#3/#28). For each " +
+				"state, scroll then report what you saw: a=arrow, m=mouse, " +
+				"0=nothing. The test scores it against expectation; the receipt " +
+				"keeps tallies, your report, and the verdict.",
+			New: func() TestModel { return newAltScrollModel() },
 		},
 		{
 			ID: "keys", Title: "keyboard input",

@@ -182,6 +182,8 @@ mirrored, what is deliberately dropped, and the open gaps — is FDR 0003
 nix build .#posh            # hermetic build + cargo test --workspace
 just build-rust             # same, via the justfile lane
 just debug-cargo test --workspace   # fast in-worktree dev-loop
+nix build .#posht           # the interactive capability test (just build-go;
+                            # part of `just build`/`test`). See docs/posht.md.
 ```
 
 The workspace builds warning-free and carries ~400 tests (parser state

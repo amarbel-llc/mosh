@@ -35,7 +35,7 @@ lint-fmt:
 
 # --- build -----------------------------------------------------------------
 
-build: build-nix build-rust
+build: build-nix build-rust build-go
 
 # Hermetic C++ reference build: autogen.sh + configure + make (+ check).
 [group("build")]
@@ -51,10 +51,17 @@ build-rust:
     # the posh binary (bin/posh + the bin/posh-server alias).
     nix build -L --show-trace
 
+# Hermetic posht build (Go/Bubble Tea terminal-capability test).
+[group("build")]
+build-go:
+    # The static posht binary (docs/posht.md). Sources posht/ only, so
+    # non-posht changes don't rebuild it.
+    nix build -L --show-trace ".#posht" -o result-posht
+
 
 # --- post-build ------------------------------------------------------------
 
-test: test-nix test-rust
+test: test-nix test-rust test-go
 
 # Hermetic, CI-safe C++ test signal (the mosh package's doCheck).
 [group("post-build")]
@@ -70,6 +77,11 @@ test-rust:
     # Cheap once build-rust has realized the derivation. github #33.
     nix build -L --show-trace --no-link ".#posh"
 
+# Hermetic posht build signal (cheap once build-go has realized it).
+[group("post-build")]
+test-go:
+    nix build -L --show-trace --no-link ".#posht"
+
 
 # --- operational -----------------------------------------------------------
 
@@ -77,8 +89,9 @@ run-nix *ARGS:
     nix run . -- {{ ARGS }}
 
 # Build and run posht: locally with no arguments, or on <host> (cross-
-# compile + scp + run via posh ssh) when a host is given. Extra args go
-# to posht; for local args pass an empty host: `just run-posht '' --list`.
+# compile + scp + run via `posh ssh` — the posh#3 plain-SSH path) when a
+# host is given. Extra args go to posht; for local args pass an empty
+# host: `just run-posht '' --list`.
 [group("operational")]
 run-posht host="" *ARGS:
     #!/usr/bin/env bash
@@ -89,6 +102,20 @@ run-posht host="" *ARGS:
     fi
     nix shell nixpkgs#go --command bash -c 'cd posht && go build -o posht .'
     exec posht/posht {{ ARGS }}
+
+# Cross-compile + scp + run posht inside a PERSISTENT roaming session on
+# <host> (`posh host:SESSION`, RFC 0001 §2). This is the path that carries
+# the per-frame DECSET 1007 sync, so it reproduces the wheel→arrows bug
+# (posh#3/#28) that the plain-ssh `run-posht` path does not. SESSION
+# defaults to "posht". To run only the relevant test:
+#   just run-posht-session box -- --only altscroll,mouse
+[group("operational")]
+run-posht-session host session="posht" *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd '{{ justfile_directory() }}'
+    exec nix shell nixpkgs#go --command \
+      posht/run-remote.sh --via 'session={{ session }}' '{{ host }}' {{ ARGS }}
 
 # --- codemod ---------------------------------------------------------------
 

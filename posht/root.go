@@ -27,19 +27,20 @@ var (
 )
 
 type rootModel struct {
-	tests  []*Test
-	order  []int // indices into tests of the selected set, fixed at start
-	pos    int   // position within order
-	cursor int   // checklist cursor
-	cur    TestModel
-	phase  phase
-	ran    bool // reached the run phase at least once
-	width  int
-	height int
+	tests   []*Test
+	order   []int // indices into tests of the selected set, fixed at start
+	pos     int   // position within order
+	cursor  int   // checklist cursor
+	cur     TestModel
+	phase   phase
+	ran     bool           // reached the run phase at least once
+	width   int
+	height  int
+	details map[string]any // test ID -> reporter.Report(), for the JSON receipt
 }
 
 func newRoot(tests []*Test) *rootModel {
-	return &rootModel{tests: tests, width: 80, height: 24}
+	return &rootModel{tests: tests, width: 80, height: 24, details: map[string]any{}}
 }
 
 func (m *rootModel) Init() tea.Cmd { return nil }
@@ -122,7 +123,15 @@ func (m *rootModel) startTest(pos int) tea.Cmd {
 	return m.cur.Init()
 }
 
+// cleanupCmd is the single chokepoint for leaving the current test (every
+// move, plus the q/Ctrl-C exits), so it doubles as where we snapshot the
+// test's JSON-receipt detail before its live model is discarded.
 func (m *rootModel) cleanupCmd() tea.Cmd {
+	if r, ok := m.cur.(reporter); ok {
+		if d := r.Report(); d != nil {
+			m.details[m.tests[m.order[m.pos]].ID] = d
+		}
+	}
 	if c, ok := m.cur.(cleaner); ok {
 		return c.Cleanup()
 	}
@@ -250,7 +259,11 @@ func (m *rootModel) runView() string {
 	b.WriteString(m.cur.View(m.width))
 
 	if t.Notes != "" {
-		b.WriteString("\n" + styleNote.Render("  note: "+t.Notes) + "\n")
+		// Width-bound so long notes wrap instead of running off the right
+		// edge; MarginLeft keeps the 2-space gutter the rest of the screen
+		// uses, and the width subtracts it so wrapped lines stay on-screen.
+		note := styleNote.Width(max(20, m.width-2)).MarginLeft(2)
+		b.WriteString("\n" + note.Render("note: "+t.Notes) + "\n")
 	}
 
 	hint := "  [y] pass · [n] fail · [s] skip · ←/→ move · q end run"
@@ -287,6 +300,6 @@ func (m *rootModel) summaryView() string {
 	b.WriteString(fmt.Sprintf("\n  %d pass · %d fail · %d skipped · %d not run\n",
 		pass, fail, skip, pending))
 	b.WriteString("\n" + styleHint.Render(
-		"  enter/q quit (markdown report prints to stdout) · b back to last test") + "\n")
+		"  enter/q quit (prints the receipt path) · b back to last test") + "\n")
 	return b.String()
 }

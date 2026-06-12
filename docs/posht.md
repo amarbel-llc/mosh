@@ -83,11 +83,32 @@ so a wrapper can collect reports mechanically.
 ## CLI
 
 ```
-posht                 # checklist → run → summary → report on stdout
+posht                 # checklist → run → summary → prints the receipt path
 posht --list          # print test ids
 posht --only wide,combining
 posht --skip graphics,bell
-posht -o report.md
+posht -o report.md    # also write the markdown report to a file
+posht --json -        # machine-readable JSON receipt to stdout
+posht --json out.json # JSON receipt to a named file (prints the path)
+```
+
+A JSON receipt is always produced. By default it is written to
+`~/.local/log/posht/<datetime>-<terminal>.json` and the **path** is printed to
+stdout on exit (not the contents — `cat` the path for those). `--json -` puts
+the JSON itself on stdout instead; `--json <file>` writes a named file and
+prints its path. The markdown report is no longer auto-printed; pass `-o
+<file>` to produce it.
+
+The `<terminal>` label is derived from the **process tree**, not `$TERM` —
+`$TERM` lies on macOS (iTerm2 and Terminal.app both inherit `xterm-kitty`),
+and the receipt's embedded `process_tree` is the trustworthy identifier.
+
+## Building
+
+```
+nix build .#posht     # hermetic build (buildGoModule), ./result-posht/bin/posht
+just build-go         # the same, via the justfile lane (part of `just build`)
+go build .            # fast in-posht/ dev-loop (needs Go ≥ 1.25)
 ```
 
 ## Getting it onto the remote
@@ -125,9 +146,5 @@ not be the thing rendering the test.
 - **Kitty keyboard protocol coverage**: posh-term implements the
   progressive-enhancement stack (`kitty_keys.rs`), but Bubble Tea v1
   doesn't enable it; the `keys` test exercises legacy encoding only.
-- **Nix packaging**: a `buildGoModule` derivation (vendorHash pinned) and a
-  `just`/flake lane, so `nix build .#posht` is hermetic like the rest.
-  Deferred until the test set stabilizes — until then `go build` in
-  `posht/` is the loop.
 - **zsh-style session/host completion tie-in** ([#37](https://github.com/amarbel-llc/posh/issues/37))
   is unrelated plumbing but shares the "cheap remote query" question.

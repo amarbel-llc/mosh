@@ -164,6 +164,29 @@
           };
         };
 
+        # posht ("diff on a POSH"): the standalone interactive terminal-
+        # capability test (Go / Bubble Tea). Its own Go module under posht/,
+        # independent of the Rust workspace and the C++ tree, so sourcing the
+        # subtree keeps non-posht changes from rebuilding it. Pure Go, so the
+        # binary is static and needs nothing on a target beyond a UTF-8 locale
+        # — which is what lets `run-remote.sh` scp it to any host. Version
+        # single source of truth: the `version` const in posht/main.go (a Go
+        # literal, distinct from the Cargo/mosh versions). See docs/posht.md.
+        posht = pkgs.buildGoModule {
+          pname = "posht";
+          version = "0.1.0"; # matches `const version` in posht/main.go
+
+          src = ./posht;
+          vendorHash = "sha256-mR/fqtqVw4VL8LcbRkoJ+TdICQPYKTn8XZEl8yqGjuQ=";
+
+          meta = with lib; {
+            description = "Interactive terminal-capability test for posh (\"diff on a POSH\")";
+            license = licenses.gpl3Plus;
+            mainProgram = "posht";
+            platforms = platforms.linux ++ platforms.darwin;
+          };
+        };
+
         # Tree-wide formatter: clang-format (C++) + nixfmt + shfmt under one
         # wrapper. Exposed as `formatter.${system}` (so `nix fmt` works) and
         # dropped into the devShell. See ./treefmt.nix.
@@ -176,6 +199,7 @@
           default = posh;
           posh = posh;
           mosh = mosh;
+          posht = posht;
         };
 
         checks = {
