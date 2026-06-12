@@ -1,9 +1,8 @@
 # SSH agent forwarding over the posh transport — scoping
 
----
-status: draft (scoping, not yet reviewed)
-date: 2026-06-12
----
+Status: draft (scoping, not yet reviewed). 2026-06-12. The decision
+trail behind FDR 0004 (`docs/features/0004-ssh-agent-forwarding.md`);
+read that first for the feature record.
 
 ## What
 
