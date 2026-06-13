@@ -130,6 +130,9 @@ struct ClientState {
     notify: NotificationEngine,
     /// $POSH_GRAB_MOUSE policy; gates the wheel-grab in grab_active().
     grab_mouse: GrabMouse,
+    /// Byte-fed state machine that translates grabbed wheel events to arrows;
+    /// its persistent state reassembles sequences split across reads (posh#52).
+    mouse_filter: MouseFilter,
     quit_pending: bool,
     shutdown_requested: bool,
     shutdown_requested_at: u64,
@@ -171,6 +174,7 @@ fn client_loop(
         predict: PredictionEngine::new(prediction, predict_overwrite),
         notify: NotificationEngine::new(now),
         grab_mouse,
+        mouse_filter: MouseFilter::default(),
         quit_pending: false,
         shutdown_requested: false,
         shutdown_requested_at: 0,
@@ -369,47 +373,159 @@ fn grab_active(st: &ClientState) -> bool {
     st.grab_mouse == GrabMouse::On && st.server_term.mouse_mode() == posh_term::MouseMode::None
 }
 
-/// Rewrites a grabbed input buffer: complete SGR mouse sequences
-/// (`ESC [ < Cb ; Cx ; Cy (M|m)`) are translated — wheel-up/down (Cb 64/65)
-/// into cursor-key sequences (SS3 `ESC O A/B` under application cursor keys,
-/// else CSI `ESC [ A/B`, matching what the app expects), every other mouse
-/// event dropped (the app never requested mouse reporting). Non-mouse bytes
-/// pass through untouched. A trailing incomplete sequence (split across reads,
-/// vanishingly rare for single-tick wheel writes) is passed through as-is.
-fn translate_grabbed_mouse(buf: &[u8], app_cursor_keys: bool) -> Vec<u8> {
-    let up: &[u8] = if app_cursor_keys { b"\x1bOA" } else { b"\x1b[A" };
-    let down: &[u8] = if app_cursor_keys { b"\x1bOB" } else { b"\x1b[B" };
-    let mut out = Vec::with_capacity(buf.len());
-    let mut i = 0;
-    while i < buf.len() {
-        // SGR mouse sequences start with ESC [ < ; anything else is literal.
-        if buf[i] == 0x1b && i + 2 < buf.len() && buf[i + 1] == b'[' && buf[i + 2] == b'<' {
-            // Find the terminating M (press) or m (release).
-            if let Some(rel) = buf[i + 3..].iter().position(|&b| b == b'M' || b == b'm') {
-                let end = i + 3 + rel; // index of the M/m
-                let body = &buf[i + 3..end]; // "Cb;Cx;Cy"
-                let cb = body.split(|&b| b == b';').next().and_then(|s| {
-                    std::str::from_utf8(s).ok().and_then(|s| s.parse::<u32>().ok())
-                });
-                // Wheel-up = 64, wheel-down = 65 (SGR button codes). Translate
-                // those to arrows; drop every other mouse event.
-                match cb {
-                    Some(64) => out.extend_from_slice(up),
-                    Some(65) => out.extend_from_slice(down),
-                    _ => {}
-                }
-                i = end + 1;
-                continue;
-            }
-            // No terminator in this buffer: incomplete trailing sequence.
-            // Pass the remainder through unchanged and stop.
-            out.extend_from_slice(&buf[i..]);
-            break;
+/// Cap on a buffered candidate SGR mouse sequence. A real one is at most
+/// `ESC [ < 223 ; 65535 ; 65535 M` (22 bytes); a longer run with no
+/// terminator is not a mouse sequence, so the filter gives up and flushes it
+/// raw — bounding the buffer and never swallowing real input forever. posh#52.
+const MAX_MOUSE_SEQ: usize = 32;
+
+/// A byte-fed state machine that intercepts SGR mouse sequences
+/// (`ESC [ < Cb ; Cx ; Cy (M|m)`) in the input stream and translates the
+/// wheel ones to arrow keys, dropping the rest — the wheel-grab transform
+/// (posh#50). Modeled on mosh's `UserInput` (and posh-term's own parser): the
+/// state persists across calls, so a sequence split across `read()`s
+/// reassembles at *any* byte boundary with no held-buffer special-casing
+/// (posh#52). Only bytes that are part of a live `ESC[<…` match are withheld;
+/// the instant a match fails (or overflows `MAX_MOUSE_SEQ`), every buffered
+/// byte is flushed verbatim — so all non-mouse input (Esc, arrows, ctrl-keys,
+/// UTF-8) round-trips losslessly.
+///
+/// Accepted tradeoff: a lone trailing `ESC` (and a partial `ESC[`) is held
+/// until the next byte resolves whether it begins a mouse sequence — the
+/// classic Esc-vs-escape-sequence ambiguity every VT input layer faces (cf.
+/// vim `ttimeoutlen`, readline `keyseq-timeout`). So a *solo* Esc keypress is
+/// withheld until the next key. This only bites under `POSH_GRAB_MOUSE=on`
+/// AND when the inner app has set no mouse mode (a bare prompt, where a lone
+/// Esc rarely matters); mosh's `UserInput` holds ESC the same way. A
+/// millisecond timeout flush (the other standard resolution) is deliberately
+/// not added — it would put a deadline in the poll loop for a default-off
+/// feature's edge. Rationale recorded in docs/decisions/0002.
+#[derive(Default)]
+struct MouseFilter {
+    state: MouseState,
+    /// Bytes consumed for the in-progress candidate, replayed verbatim if the
+    /// candidate turns out not to be a (complete) mouse sequence.
+    pending: Vec<u8>,
+}
+
+#[derive(Default, PartialEq)]
+enum MouseState {
+    #[default]
+    Ground,
+    Esc,        // saw ESC
+    Bracket,    // saw ESC [
+    Body,       // saw ESC [ < ; collecting Cb;Cx;Cy until M/m
+}
+
+impl MouseFilter {
+    /// Feed one input batch; returns the rewritten bytes to forward. Any
+    /// incomplete trailing sequence stays in `self` for the next call.
+    fn feed(&mut self, buf: &[u8], app_cursor_keys: bool) -> Vec<u8> {
+        let mut out = Vec::with_capacity(buf.len() + self.pending.len());
+        for &b in buf {
+            self.step(b, app_cursor_keys, &mut out);
         }
-        out.push(buf[i]);
-        i += 1;
+        out
     }
-    out
+
+    fn step(&mut self, b: u8, app_cursor_keys: bool, out: &mut Vec<u8>) {
+        match self.state {
+            MouseState::Ground => {
+                if b == 0x1b {
+                    self.pending.push(b);
+                    self.state = MouseState::Esc;
+                } else {
+                    out.push(b);
+                }
+            }
+            MouseState::Esc => {
+                if b == b'[' {
+                    self.pending.push(b);
+                    self.state = MouseState::Bracket;
+                } else {
+                    // Not ESC [ — a real Esc or some other ESC sequence.
+                    // Flush ESC and reprocess this byte from Ground.
+                    self.flush(out);
+                    self.step(b, app_cursor_keys, out);
+                }
+            }
+            MouseState::Bracket => {
+                if b == b'<' {
+                    self.pending.push(b);
+                    self.state = MouseState::Body;
+                } else {
+                    // ESC [ <other> — a real CSI (arrow, etc.), not mouse.
+                    self.flush(out);
+                    self.step(b, app_cursor_keys, out);
+                }
+            }
+            MouseState::Body => {
+                if b == b'M' || b == b'm' {
+                    // Complete: translate the button code, drop non-wheel.
+                    let body = &self.pending[3..]; // after ESC [ <
+                    let cb = body.split(|&c| c == b';').next().and_then(|s| {
+                        std::str::from_utf8(s).ok().and_then(|s| s.parse::<u32>().ok())
+                    });
+                    match cb {
+                        Some(64) => out.extend_from_slice(arrow_up(app_cursor_keys)),
+                        Some(65) => out.extend_from_slice(arrow_down(app_cursor_keys)),
+                        // click / motion / other button → dropped; a malformed
+                        // ESC[<M with no button code (cb == None) drops too,
+                        // which is correct: the grabbed app requested no mouse
+                        // reporting, so no mouse event should reach it.
+                        _ => {}
+                    }
+                    self.pending.clear();
+                    self.state = MouseState::Ground;
+                } else if b.is_ascii_digit() || b == b';' {
+                    self.pending.push(b);
+                    if self.pending.len() > MAX_MOUSE_SEQ {
+                        // Not a real mouse sequence; give up and flush raw.
+                        self.flush(out);
+                    }
+                } else {
+                    // Unexpected byte in the body: not a valid mouse sequence.
+                    self.flush(out);
+                    self.step(b, app_cursor_keys, out);
+                }
+            }
+        }
+    }
+
+    /// Emit the buffered candidate verbatim and reset to Ground (the bytes
+    /// weren't a mouse sequence after all).
+    fn flush(&mut self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.pending);
+        self.pending.clear();
+        self.state = MouseState::Ground;
+    }
+
+    /// Reset to Ground and return any held partial verbatim. Called when the
+    /// grab disengages mid-sequence (the app took over the mouse): the held
+    /// bytes are real user input and must not be dropped — handing them back
+    /// lets the caller forward the now-complete sequence to the app that just
+    /// asked for mouse reporting, rather than losing the prefix and leaking a
+    /// corrupt tail. posh#52.
+    fn take_pending(&mut self) -> Vec<u8> {
+        self.state = MouseState::Ground;
+        std::mem::take(&mut self.pending)
+    }
+}
+
+fn arrow_up(app_cursor_keys: bool) -> &'static [u8] {
+    if app_cursor_keys {
+        b"\x1bOA"
+    } else {
+        b"\x1b[A"
+    }
+}
+
+fn arrow_down(app_cursor_keys: bool) -> &'static [u8] {
+    if app_cursor_keys {
+        b"\x1bOB"
+    } else {
+        b"\x1b[B"
+    }
 }
 
 /// Feeds user bytes through the Ctrl-^ quit-sequence state machine, the
@@ -418,14 +534,30 @@ fn translate_grabbed_mouse(buf: &[u8], app_cursor_keys: bool) -> Vec<u8> {
 fn process_user_input(st: &mut ClientState, buf: &[u8], raw: &RawMode) -> bool {
     let now = now_ms();
 
-    // When grabbing the wheel, rewrite mouse events to arrows (or drop them)
-    // before the byte loop, so the rest of the path is unchanged.
+    // When grabbing the wheel, run input through the mouse filter (translating
+    // wheel events to arrows, dropping other mouse events) before the byte
+    // loop, so the rest of the path is unchanged. The filter's persistent
+    // state reassembles sequences split across reads (posh#52).
     let grabbed;
     let buf: &[u8] = if grab_active(st) {
-        grabbed = translate_grabbed_mouse(buf, st.server_term.app_cursor_keys());
+        let app_cursor_keys = st.server_term.app_cursor_keys();
+        grabbed = st.mouse_filter.feed(buf, app_cursor_keys);
         &grabbed
     } else {
-        buf
+        // Not grabbing. If the filter holds a partial from when grab was last
+        // active (the app enabled its own mouse mode mid-sequence, flipping
+        // grab off between reads), hand those bytes back and prepend them so
+        // the app — which now wants mouse events — receives the complete
+        // sequence, rather than us dropping the prefix and leaking the tail.
+        let pending = st.mouse_filter.take_pending();
+        if pending.is_empty() {
+            buf
+        } else {
+            let mut joined = pending;
+            joined.extend_from_slice(buf);
+            grabbed = joined;
+            &grabbed
+        }
     };
 
     // Don't predict for bulk pastes.
@@ -655,26 +787,87 @@ mod tests {
         assert!(GrabMouse::parse(Some("sometimes")).is_err());
     }
 
+    /// Feed a whole batch through a fresh filter (no split across reads).
+    fn filter_once(buf: &[u8], app_cursor_keys: bool) -> Vec<u8> {
+        MouseFilter::default().feed(buf, app_cursor_keys)
+    }
+
     #[test]
     fn grabbed_wheel_becomes_arrows_and_other_events_drop() {
         // Wheel-up (Cb 64) and wheel-down (Cb 65) → CSI cursor keys; a click
         // (Cb 0) and motion are dropped; surrounding literal bytes survive.
-        assert_eq!(translate_grabbed_mouse(b"\x1b[<64;10;5M", false), b"\x1b[A");
-        assert_eq!(translate_grabbed_mouse(b"\x1b[<65;10;5M", false), b"\x1b[B");
-        assert_eq!(translate_grabbed_mouse(b"\x1b[<0;3;4M", false), b"");
-        assert_eq!(translate_grabbed_mouse(b"\x1b[<0;3;4m", false), b"");
+        assert_eq!(filter_once(b"\x1b[<64;10;5M", false), b"\x1b[A");
+        assert_eq!(filter_once(b"\x1b[<65;10;5M", false), b"\x1b[B");
+        assert_eq!(filter_once(b"\x1b[<0;3;4M", false), b"");
+        assert_eq!(filter_once(b"\x1b[<0;3;4m", false), b"");
         // Application cursor keys → SS3 form.
-        assert_eq!(translate_grabbed_mouse(b"\x1b[<64;1;1M", true), b"\x1bOA");
-        assert_eq!(translate_grabbed_mouse(b"\x1b[<65;1;1M", true), b"\x1bOB");
+        assert_eq!(filter_once(b"\x1b[<64;1;1M", true), b"\x1bOA");
+        assert_eq!(filter_once(b"\x1b[<65;1;1M", true), b"\x1bOB");
         // Literal bytes around a wheel event pass through; two ticks coalesce.
-        assert_eq!(
-            translate_grabbed_mouse(b"a\x1b[<64;1;1Mb\x1b[<65;1;1M", false),
-            b"a\x1b[Ab\x1b[B"
-        );
+        assert_eq!(filter_once(b"a\x1b[<64;1;1Mb\x1b[<65;1;1M", false), b"a\x1b[Ab\x1b[B");
         // A plain keystroke is untouched.
-        assert_eq!(translate_grabbed_mouse(b"x", false), b"x");
-        // An incomplete trailing sequence passes through unchanged.
-        assert_eq!(translate_grabbed_mouse(b"\x1b[<64;1", false), b"\x1b[<64;1");
+        assert_eq!(filter_once(b"x", false), b"x");
+    }
+
+    #[test]
+    fn non_mouse_escape_sequences_round_trip_losslessly() {
+        // The filter must never CORRUPT real input. A real arrow key (ESC [ A),
+        // a ctrl-arrow, an ESC O cursor key, and a control byte all emerge
+        // verbatim once complete — the candidate dies at the non-`<` byte and
+        // everything buffered is flushed unchanged.
+        assert_eq!(filter_once(b"\x1b[A", false), b"\x1b[A"); // real up-arrow
+        assert_eq!(filter_once(b"\x1b[1;5C", false), b"\x1b[1;5C"); // ctrl-right
+        assert_eq!(filter_once(b"\x1bOA", false), b"\x1bOA"); // SS3 up
+        assert_eq!(filter_once(b"\x03", false), b"\x03"); // Ctrl-C
+
+        // A lone trailing ESC is HELD (it could begin a mouse seq next read) —
+        // the byte machine's nature, matching mosh's UserInput. It is not lost:
+        // the next byte completes the decision and flushes it.
+        let mut f = MouseFilter::default();
+        assert_eq!(f.feed(b"\x1b", false), b"", "lone ESC held pending next byte");
+        assert_eq!(f.feed(b"a", false), b"\x1ba", "next byte flushes the held ESC");
+    }
+
+    #[test]
+    fn grabbed_split_sequence_reassembles_at_any_boundary() {
+        // posh#52: the persistent state machine reassembles a wheel sequence
+        // split across reads at EVERY byte boundary, with no raw leak — the
+        // case the old buffer-scan could only partly handle.
+        for split in 1..b"\x1b[<64;10;5M".len() {
+            let seq = b"\x1b[<64;10;5M";
+            let mut f = MouseFilter::default();
+            let mut out = f.feed(&seq[..split], false);
+            out.extend(f.feed(&seq[split..], false));
+            assert_eq!(out, b"\x1b[A", "split at {split} must reassemble to one arrow");
+        }
+    }
+
+    #[test]
+    fn grab_flip_mid_sequence_hands_back_the_held_partial() {
+        // posh#52 / review candidate 1: if grab disengages (app took the
+        // mouse) while a wheel sequence is half-read, the held prefix must be
+        // handed back, not dropped — so the app receives the complete event.
+        let mut f = MouseFilter::default();
+        assert_eq!(f.feed(b"\x1b[<64", false), b"", "front half held while grabbed");
+        // Grab flips off; the caller drains the partial and prepends the tail.
+        let pending = f.take_pending();
+        assert_eq!(pending, b"\x1b[<64", "held prefix returned, not lost");
+        let mut delivered = pending;
+        delivered.extend_from_slice(b";1;1M");
+        assert_eq!(delivered, b"\x1b[<64;1;1M", "app gets the whole sequence");
+        // And the filter is back at Ground for whatever comes next.
+        assert_eq!(f.feed(b"x", false), b"x");
+    }
+
+    #[test]
+    fn grabbed_partial_is_bounded_and_flushed_not_held_forever() {
+        // An ESC[< that never terminates must not grow the buffer without
+        // bound: past MAX_MOUSE_SEQ it isn't a real mouse sequence, so it's
+        // flushed raw rather than swallowing input indefinitely.
+        let mut junk = b"\x1b[<".to_vec();
+        junk.extend(std::iter::repeat(b'9').take(MAX_MOUSE_SEQ));
+        let out = filter_once(&junk, false);
+        assert_eq!(out, junk, "over-long candidate is flushed literally");
     }
 
     #[test]
@@ -720,6 +913,7 @@ mod tests {
             predict: PredictionEngine::new(DisplayPreference::Never, false),
             notify: NotificationEngine::new(0),
             grab_mouse: GrabMouse::Off,
+            mouse_filter: MouseFilter::default(),
             quit_pending: false,
             shutdown_requested: false,
             shutdown_requested_at: 0,
