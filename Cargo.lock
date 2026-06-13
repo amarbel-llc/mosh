@@ -148,6 +148,7 @@ dependencies = [
 name = "posh-rec"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "posh-term",
 ]
 

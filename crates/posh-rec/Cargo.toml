@@ -8,3 +8,7 @@ repository.workspace = true
 
 [dependencies]
 posh-term = { path = "../posh-term" }
+# Used only by the bin's `record` path (PTY/libc FFI). The lib is
+# #![forbid(unsafe_code)] and never touches libc; the recorder lives in the
+# bin-only src/record.rs.
+libc = "0.2"
