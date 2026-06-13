@@ -40,6 +40,14 @@ pub struct Stats {
     render_bytes_out: u64,
     render_skipped_idle: u64,
 
+    // Client compute timing — the mirror of the server's dump_vt_us. `apply` is
+    // the full-dump re-parse (apply_frame), `compose` is the snapshot + diff
+    // render (compose_frame). Both reported as cumulative averages.
+    apply_us_total: u64,
+    apply_count: u64,
+    compose_us_total: u64,
+    compose_count: u64,
+
     // Server framing economics.
     /// Sum of full-dump bytes over frames that had a diff option (whether or
     /// not the diff was chosen) — the denominator for `diff_saved_pct`.
@@ -93,6 +101,23 @@ impl Stats {
         self.render_skipped_idle += 1;
     }
 
+    /// Whether timing is active, so callers can skip `Instant::now` on the hot
+    /// path when instrumentation is off (the `let t = enabled().then(...)` idiom).
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Client: accumulate one apply_frame re-parse (full-dump `term.process`).
+    pub fn record_apply_us(&mut self, us: u64) {
+        self.apply_us_total += us;
+        self.apply_count += 1;
+    }
+    /// Client: accumulate one compose_frame render (snapshot + `new_frame` diff).
+    pub fn record_compose_us(&mut self, us: u64) {
+        self.compose_us_total += us;
+        self.compose_count += 1;
+    }
+
     /// A frame the server sent as a diff: record the full-dump size it would
     /// otherwise have cost and the bytes the diff saved.
     pub fn record_diff_frame(&mut self, full_len: usize, diff_len: usize) {
@@ -138,6 +163,22 @@ impl Stats {
             0
         } else {
             self.dump_vt_us_total / self.dump_vt_count
+        }
+    }
+
+    fn avg_apply_us(&self) -> u64 {
+        if self.apply_count == 0 {
+            0
+        } else {
+            self.apply_us_total / self.apply_count
+        }
+    }
+
+    fn avg_compose_us(&self) -> u64 {
+        if self.compose_count == 0 {
+            0
+        } else {
+            self.compose_us_total / self.compose_count
         }
     }
 
@@ -222,7 +263,8 @@ impl Stats {
             &format!(
                 "{label} srtt={srtt:.0}ms rto={rto}ms send_int={send_interval}ms \
                  frames rx={} (full={} diff={} empty={}) bytes_rx={bytes_rx} bw_down={} \
-                 predict active={} srtt_trig={} render writes={} bytes_out={} skipped_idle={}",
+                 predict active={} srtt_trig={} render writes={} bytes_out={} skipped_idle={} \
+                 apply_us={} compose_us={}",
                 self.frames_total,
                 self.frames_full,
                 self.frames_diff,
@@ -233,6 +275,8 @@ impl Stats {
                 self.render_writes,
                 self.render_bytes_out,
                 self.render_skipped_idle,
+                self.avg_apply_us(),
+                self.avg_compose_us(),
             ),
         );
         self.mark_flushed(now, bytes_rx, bytes_tx);
@@ -402,6 +446,8 @@ mod tests {
 
         let mut c = enabled_stats();
         c.record_frame_diff();
+        c.record_apply_us(40);
+        c.record_compose_us(60);
         c.emit_client("client", 1000, 42.0, 200, 21, true, false, 8192, 256);
 
         let mut s = enabled_stats();
@@ -417,6 +463,8 @@ mod tests {
             "frames rx=1 (full=0 diff=1",
             "bw_down=",
             "predict active=1 srtt_trig=0",
+            "apply_us=40",
+            "compose_us=60",
         ] {
             assert!(body.contains(key), "missing client key {key:?} in:\n{body}");
         }

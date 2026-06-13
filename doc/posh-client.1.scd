@@ -68,8 +68,10 @@ _POSH_DEBUG_LOG_
 	When set to a writable path, the client appends periodic one-line
 	performance summaries — smoothed RTT, RTO, send interval, received
 	frame counts (full/diff/empty), download bandwidth, prediction
-	state, and render activity (writes, bytes, idle skips) — plus a
-	final line on exit. Rotated at 5 MB. Unset disables logging.
+	state, render activity (writes, bytes, idle skips), and per-frame
+	compute timing (full-dump re-parse and render compose, in
+	microseconds) — plus a final line on exit. Rotated at 5 MB. Unset
+	disables logging.
 
 # SEE ALSO
 

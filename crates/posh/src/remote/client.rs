@@ -4,6 +4,7 @@
 //! renderer (display.rs) so frames morph the screen without flicker.
 
 use std::net::{SocketAddr, ToSocketAddrs};
+use std::time::Instant;
 
 use posh_term::Terminal;
 
@@ -735,7 +736,13 @@ fn apply_frame(st: &mut ClientState, frame: &ServerFrame) -> bool {
         return true; // duplicate retransmission: re-ack, don't reapply
     }
     let mut term = Terminal::with_scrollback(st.rows, st.cols, 0);
+    // Time the full-dump re-parse — the client-side mirror of the server's
+    // dump_vt_us, and the suspected hot spot (it grows with the dump's size).
+    let apply_timer = st.stats.enabled().then(Instant::now);
     term.process(&bytes);
+    if let Some(t) = apply_timer {
+        st.stats.record_apply_us(t.elapsed().as_micros() as u64);
+    }
     // A DECCOLM replayed from the server dump resizes the model to 132/80
     // columns regardless of the real tty: clamp back so renders never paint
     // a wider image than the tty can show (the server-side mode is the
@@ -783,6 +790,10 @@ fn compose_frame(st: &mut ClientState, now: u64) -> Vec<u8> {
     st.last_render_state = model_state;
     st.last_render_overlays = overlays_live;
 
+    // Time the actual render compute (snapshot + prediction/banner overlay +
+    // diff), excluding the idle fast-path above so the average reflects real
+    // work. enabled() is read and dropped before the borrows below.
+    let compose_timer = st.stats.enabled().then(Instant::now);
     let base = Snapshot::from_term(&st.server_term);
     st.predict.cull(&base, now);
     let mut next = base;
@@ -794,6 +805,9 @@ fn compose_frame(st: &mut ClientState, now: u64) -> Vec<u8> {
     let bytes = display::new_frame(st.initialized, &st.last_drawn, &next, grab);
     st.initialized = true;
     st.last_drawn = next;
+    if let Some(t) = compose_timer {
+        st.stats.record_compose_us(t.elapsed().as_micros() as u64);
+    }
     bytes
 }
 
