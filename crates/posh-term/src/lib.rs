@@ -36,6 +36,8 @@
 //! - `Terminal::dump_text(&self) -> String` (plain text, scrollback included)
 //! - `Terminal::take_responses(&mut self) -> Vec<u8>` (DA/DSR/etc. replies)
 //! - `Terminal::screen(&self) -> &Screen` (cell-level read access)
+//! - `version() -> &'static str` (the emulator revision, flowed from
+//!   version.env at build time; stamped into posh-rec's `.castx` `emu_rev`)
 #![forbid(unsafe_code)]
 
 /// Placeholder cell size in pixels, shared by the XTWINOPS reports, kitty
@@ -70,3 +72,11 @@ pub use mouse::{encode_mouse, MouseButton, MouseEvent, MouseEventKind};
 pub use screen::{Row, Screen, SemanticMark};
 pub use terminal::{Cursor, CursorShape, ScreenSwitch, Terminal};
 pub use wcwidth::wcwidth;
+
+/// The emulator revision string. Flowed from the repo's `version.env`
+/// (`POSH_VERSION`) at build time by `build.rs` — see eng-versioning(7). Used
+/// by posh-rec to stamp the `.castx` `emu_rev` header so a recorded golden
+/// frame can be audited against the emulator version that produced it.
+pub fn version() -> &'static str {
+    env!("POSH_VERSION")
+}

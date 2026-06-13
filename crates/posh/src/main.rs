@@ -15,7 +15,8 @@ use remote::datagram::Family;
 use session::{Config, ListFormat};
 use util::{Error, Result};
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+// Flowed from version.env (POSH_VERSION) by build.rs; see eng-versioning(7).
+const VERSION: &str = env!("POSH_VERSION");
 
 fn main() {
     if let Err(e) = run() {

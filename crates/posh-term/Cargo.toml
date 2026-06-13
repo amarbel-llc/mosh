@@ -1,6 +1,6 @@
 [package]
 name = "posh-term"
-version = "0.1.0"
+version.workspace = true # inert placeholder; real version flows from version.env (see root Cargo.toml)
 description = "A standalone terminal emulation library: a Rust rewrite of the ghostty-vt core, targeting full kitty feature parity"
 edition.workspace = true
 license.workspace = true

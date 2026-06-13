@@ -6,10 +6,14 @@
 // reads for the actual version — so there is nothing to keep in sync and no
 // drift to guard against.
 //
+// posh-term exposes the flowed value through posh_term::version(), which the
+// posh-rec recorder stamps into the .castx `emu_rev` header so golden frames
+// can be audited against the emulator revision that produced them.
+//
 // The authoritative version resolves in order:
 //   1. $POSH_VERSION in the build environment (set by the nix derivation).
 //   2. ../../version.env relative to the crate (dev builds from the workspace
-//      checkout; this crate is at crates/posh/).
+//      checkout; this crate is at crates/posh-term/).
 //   3. CARGO_PKG_VERSION as a never-hit fallback (only when neither source
 //      exists, e.g. a published crate tarball), so env!("POSH_VERSION") always
 //      resolves.

@@ -1,6 +1,6 @@
 [package]
 name = "posh"
-version = "0.1.0"
+version.workspace = true # inert placeholder; real version flows from version.env (see root Cargo.toml)
 description = "Persistent, roaming terminal sessions: a combined Rust rewrite of zmx and mosh"
 edition.workspace = true
 license.workspace = true

@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "posh"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "aes-gcm",
  "libc",
@@ -145,14 +145,14 @@ dependencies = [
 
 [[package]]
 name = "posh-rec"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "posh-term",
 ]
 
 [[package]]
 name = "posh-term"
-version = "0.1.0"
+version = "0.0.0"
 
 [[package]]
 name = "subtle"

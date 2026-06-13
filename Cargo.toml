@@ -3,6 +3,14 @@ resolver = "2"
 members = ["crates/posh-term", "crates/posh", "crates/posh-rec"]
 
 [workspace.package]
+# NOT the source of truth. The real version is version.env (POSH_VERSION),
+# flowed into the crates at build time via each crate's build.rs
+# (cargo:rustc-env=POSH_VERSION) and read at runtime as env!("POSH_VERSION").
+# Cargo's package.version is mandatory, so this inert placeholder satisfies it
+# for every workspace member (version.workspace = true); it is never bumped and
+# nothing reads it for the actual version, so it cannot drift. See
+# eng-versioning(7).
+version = "0.0.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/amarbel-llc/mosh"

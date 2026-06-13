@@ -166,27 +166,24 @@ update-nix:
 
 # Version bump + tag + release, per eng-versioning(7). version.env
 # (POSH_VERSION) is posh's single source of truth, read by flake.nix at
-# eval time and guarded against Cargo.toml by crates/posh/build.rs.
-# `bump-version` is a pure mutation; `tag` reads the current value and
-# pushes a signed tag; `release` orchestrates changelog -> bump ->
-# commit -> tag -> gh release. (mosh and posht keep their own version
-# lineages and are untouched by these recipes.)
+# eval time and flowed into every crate at build time via each crate's
+# build.rs (cargo:rustc-env=POSH_VERSION). `bump-version` is a pure
+# mutation; `tag` reads the current value and pushes a signed tag;
+# `release` orchestrates changelog -> bump -> commit -> tag -> gh release.
+# (mosh and posht keep their own version lineages and are untouched by
+# these recipes.)
 
-# Rewrite POSH_VERSION across all three sites that must agree:
-# version.env, crates/posh/Cargo.toml package.version, and the posh
-# entry in Cargo.lock (the Shape-B guard fails the build on any drift).
-# Touches no other file — committing is `release`'s job.
-# Usage: just bump-version 0.1.1
+# Rewrite POSH_VERSION in version.env — the only place the version lives.
+# The crates' Cargo.toml package.version is an inert "0.0.0" placeholder
+# (version.workspace = true) that build.rs overrides at compile time, so
+# there is no Cargo.toml or Cargo.lock version to resync here. Touches no
+# other file — committing is `release`'s job. Usage: just bump-version 0.1.1
 [group("maintenance")]
 bump-version new_version:
     #!/usr/bin/env bash
     set -euo pipefail
     cd '{{ justfile_directory() }}'
     sed -E -i 's/^(export POSH_VERSION)=.*/\1={{ new_version }}/' version.env
-    sed -E -i 's/^version = ".*"$/version = "{{ new_version }}"/' crates/posh/Cargo.toml
-    # Re-resolve only the posh workspace member so Cargo.lock's posh
-    # entry matches; --offline avoids any registry fetch.
-    nix develop --command cargo update -p posh --offline
 
 # Sign + push a tag named after the current version.env. The "v" prefix
 # is added for you. Usage: just tag "release v0.1.1"
@@ -203,9 +200,9 @@ tag message:
 
 # Cut a release: must be run on the default branch. Generates a
 # changelog (commits since the previous v* tag) BEFORE bumping so the
-# bump commit doesn't appear in its own changelog, then bumps
-# version.env + Cargo.toml + Cargo.lock, commits, signs+pushes a v<sem>
-# tag, and creates a GitHub release whose body is the changelog.
+# bump commit doesn't appear in its own changelog, then bumps version.env
+# (the only versioned file), commits, signs+pushes a v<sem> tag, and
+# creates a GitHub release whose body is the changelog.
 # Usage: just release 0.1.1
 [group("maintenance")]
 release new_version:
@@ -224,7 +221,7 @@ release new_version:
     notes="$header"$'\n\n'"${changelog:-- (no changes recorded)}"
 
     just bump-version "{{ new_version }}"
-    git add version.env crates/posh/Cargo.toml Cargo.lock
+    git add version.env
     git commit -m "$header"
 
     just tag "$header"

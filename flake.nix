@@ -38,10 +38,11 @@
 
         # posh's single source of truth: version.env at the repo root
         # (POSH_VERSION). Read here for the derivation `version` attr and
-        # passed into the build env so crates/posh/build.rs's drift guard
-        # resolves it without relying on the relative-path read. The Cargo
-        # manifest's package.version is kept in lockstep by `just
-        # bump-version`; the guard fails the build on any drift. See
+        # passed into the build env so each crate's build.rs flows it into
+        # the crate (cargo:rustc-env=POSH_VERSION) without relying on the
+        # relative-path read. The Cargo manifests' package.version is an
+        # inert "0.0.0" placeholder that build.rs overrides at compile time,
+        # so there is nothing to keep in lockstep and no drift. See
         # eng-versioning(7).
         poshVersion = builtins.head (
           builtins.match ".*POSH_VERSION=([^\n]+).*" (builtins.readFile ./version.env)
@@ -163,10 +164,11 @@
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
 
-          # The drift guard in crates/posh/build.rs reads POSH_VERSION from
-          # the build env (the nix `src` also carries version.env into the
-          # sandbox, but the env var makes the guard independent of the
-          # relative-path read). See eng-versioning(7).
+          # Each crate's build.rs reads POSH_VERSION from the build env and
+          # flows it into the crate (cargo:rustc-env=POSH_VERSION); runtime
+          # reads env!("POSH_VERSION"). The nix `src` also carries version.env
+          # into the sandbox, but the env var makes the build independent of
+          # the relative-path read. See eng-versioning(7).
           POSH_VERSION = poshVersion;
 
           # scdoc compiles the hand-written man pages in doc/*.scd during
