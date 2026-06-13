@@ -36,21 +36,26 @@ lint-fmt:
 # Compile every doc/*.scd man page, failing on any scdoc parse error
 # (the nested-inline-formatting / leading-bracket pitfalls). Cheap
 # dev-loop check so a broken page is caught before the .#posh build's
-# postInstall does. See eng-manpages(7).
+# postInstall does. Runs scdoc through `nix develop` so it works
+# whether or not the devShell is already active (the pre-merge hook
+# runs `just` outside it). See eng-manpages(7).
 [group("pre-build")]
 lint-doc:
     #!/usr/bin/env bash
     set -euo pipefail
-    fail=0
-    for f in doc/*.scd; do
-      if scdoc < "$f" > /dev/null; then
-        echo "ok   $f"
-      else
-        echo "FAIL $f"
-        fail=1
-      fi
-    done
-    exit "$fail"
+    cd '{{ justfile_directory() }}'
+    nix develop --command bash -c '
+      fail=0
+      for f in doc/*.scd; do
+        if scdoc < "$f" > /dev/null; then
+          echo "ok   $f"
+        else
+          echo "FAIL $f"
+          fail=1
+        fi
+      done
+      exit "$fail"
+    '
 
 # --- build -----------------------------------------------------------------
 
