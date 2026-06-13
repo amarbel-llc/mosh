@@ -7,6 +7,7 @@
 //! the bytes.
 
 use crate::castx::{EventCode, Reader};
+use crate::golden::{self, GoldenKind};
 use crate::player::{Granularity, Player};
 use crate::Replay;
 use std::io::Write;
@@ -38,11 +39,15 @@ usage:
   posh-rec replay <file> [--to-marker NAME] [--dump text|vt|flat]
   posh-rec step <file> (--by byte|escape|write|change|frame|marker [--n N]
                         | --to-marker NAME) [--frame-gap SECS] [--dump ...]
+  posh-rec bless <file> --golden <path> [--at MARKER] [--kind grid|vt|flat]
+  posh-rec assert <file> --golden <path> [--at MARKER] [--kind ...]
+                  [--check-emu-rev]
 
 Replay a .castx / asciinema .cast v2 recording through the in-process
 posh-term emulator. `replay` prints the final screen; `step` advances by
-discrete steps and prints the intermediate screen (the step position goes
-to stderr). Default --dump text. Timing is never replayed as sleeps.";
+discrete steps; `bless` writes a golden-frame snapshot and `assert` checks
+one (the CI gate). Default --dump text, --kind grid. Timing is never
+replayed as sleeps.";
 
 /// Run the posh-rec CLI over `args` — the arguments after the program name
 /// (for the `posh-rec` bin) or after the `rec` subcommand (for `posh rec`).
@@ -51,6 +56,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("replay") => run_replay(&args[1..]),
         Some("step") => run_step(&args[1..]),
+        Some("bless") => run_bless(&args[1..]),
+        Some("assert") => run_assert(&args[1..]),
         Some("help" | "-h" | "--help") => {
             println!("{USAGE}");
             Ok(())
@@ -197,6 +204,116 @@ fn dump_terminal(term: &posh_term::Terminal, dump: Dump) -> Vec<u8> {
         Dump::Text => term.dump_text().into_bytes(),
         Dump::Vt => term.dump_vt(),
         Dump::Flat => term.dump_vt_flat(),
+    }
+}
+
+/// Shared flags for `bless` / `assert`.
+struct GoldenArgs<'a> {
+    file: &'a str,
+    golden: &'a str,
+    at: Option<&'a str>,
+    kind: GoldenKind,
+    check_emu_rev: bool,
+}
+
+fn parse_golden_args<'a>(args: &'a [String]) -> Result<GoldenArgs<'a>, String> {
+    let mut file: Option<&str> = None;
+    let mut golden: Option<&str> = None;
+    let mut at: Option<&str> = None;
+    let mut kind = GoldenKind::Grid;
+    let mut check_emu_rev = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--golden" => {
+                golden = Some(args.get(i + 1).ok_or("--golden requires a value")?);
+                i += 2;
+            }
+            "--at" => {
+                at = Some(args.get(i + 1).ok_or("--at requires a value")?);
+                i += 2;
+            }
+            "--kind" => {
+                kind = GoldenKind::parse(args.get(i + 1).ok_or("--kind requires a value")?)?;
+                i += 2;
+            }
+            "--check-emu-rev" => {
+                check_emu_rev = true;
+                i += 1;
+            }
+            flag if flag.starts_with('-') => {
+                return Err(format!("unknown flag {flag:?}\n\n{USAGE}"));
+            }
+            positional => {
+                if file.is_some() {
+                    return Err(format!("unexpected extra argument {positional:?}"));
+                }
+                file = Some(positional);
+                i += 1;
+            }
+        }
+    }
+    Ok(GoldenArgs {
+        file: file.ok_or_else(|| format!("a <file> is required\n\n{USAGE}"))?,
+        golden: golden.ok_or_else(|| format!("--golden <path> is required\n\n{USAGE}"))?,
+        at,
+        kind,
+        check_emu_rev,
+    })
+}
+
+/// Build a Player and advance it to `--at MARKER` (or the end of the stream).
+fn player_at(file: &str, at: Option<&str>) -> Result<Player, String> {
+    let src = std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
+    let mut player = Player::from_source(&src)?;
+    match at {
+        Some(name) => {
+            if !player.step_to_marker(name) {
+                return Err(format!("no marker {name:?} in the recording"));
+            }
+        }
+        None => player.step_to_end(),
+    }
+    Ok(player)
+}
+
+fn run_bless(args: &[String]) -> Result<(), String> {
+    let a = parse_golden_args(args)?;
+    let player = player_at(a.file, a.at)?;
+    let emu = player.emu_rev().unwrap_or("unknown");
+    let rendered = golden::render(player.terminal(), a.kind, emu);
+    std::fs::write(a.golden, rendered).map_err(|e| format!("{}: {e}", a.golden))?;
+    eprintln!("posh-rec: blessed {} ({:?})", a.golden, a.kind);
+    Ok(())
+}
+
+fn run_assert(args: &[String]) -> Result<(), String> {
+    let a = parse_golden_args(args)?;
+    let player = player_at(a.file, a.at)?;
+    let emu = player.emu_rev().unwrap_or("unknown");
+    let fresh = golden::render(player.terminal(), a.kind, emu);
+    let stored = std::fs::read_to_string(a.golden).map_err(|e| format!("{}: {e}", a.golden))?;
+
+    if a.check_emu_rev {
+        if let Some(golden_emu) = golden::golden_emu_rev(&stored) {
+            if golden_emu != emu {
+                eprintln!(
+                    "posh-rec: warning: golden blessed under emu_rev {golden_emu:?}, \
+                     recording is {emu:?} — regen may be due"
+                );
+            }
+        }
+    }
+
+    if fresh == stored {
+        Ok(())
+    } else {
+        eprint!(
+            "posh-rec: golden mismatch ({}):\n{}",
+            a.golden,
+            golden::diff(&stored, &fresh, player.terminal(), a.kind)
+        );
+        Err("golden assertion failed".to_string())
     }
 }
 

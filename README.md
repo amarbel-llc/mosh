@@ -206,6 +206,8 @@ posh-rec record [--out f.castx] -- <cmd>       # record a command under a PTY
 posh --record f.castx <session>                # record a live posh session
 posh-rec replay <file> [--dump text|vt|flat]   # or: posh rec replay ...
 posh-rec step <file> --by change --n 3         # step-debug, dump each screen
+posh-rec bless  <file> --golden g --at K       # write a golden-frame snapshot
+posh-rec assert <file> --golden g --at K       # check it (CI gate)
 ```
 
 The recording format is `.castx`, a strict superset of asciinema `.cast` v2
@@ -213,8 +215,12 @@ The recording format is `.castx`, a strict superset of asciinema `.cast` v2
 header block), so any `.cast` replays through posh-rec and any `.castx` plays
 in `asciinema`. `step` advances by an emulator-defined granularity
 (`byte`/`escape`/`write`/`change`/`frame`/`marker`) and dumps the intermediate
-screen — a deterministic VT100 frame debugger. Issue #56 tracks the epic; the
-assertion/golden-frame surface lands in a later phase.
+screen — a deterministic VT100 frame debugger. `bless`/`assert` snapshot the
+screen at a marker (`grid` is diff-friendly text + a style sidecar; `vt` is the
+raw escape stream) — the deterministic analog of `tmux capture-pane`; a library
+of typed assertion helpers (`find_line`, `cells_have_fg/bg`, `cells_are_*`)
+renders a colored expected-vs-actual diff on mismatch. Issue #56 tracks the
+epic; adoption + the `.castx` RFC land in the final phase.
 
 ## Building and testing
 

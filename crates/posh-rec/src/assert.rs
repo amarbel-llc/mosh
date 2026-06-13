@@ -176,6 +176,11 @@ fn build_message(row: u16, cells: &[Cell], cols: &[u16], want: &Want, bad: &[u16
     m
 }
 
+/// Render a row of cells with 24-bit SGR (shared with the golden colored view).
+pub(crate) fn render_cells(cells: &[Cell]) -> String {
+    render_row(cells, None)
+}
+
 /// Render a row with 24-bit SGR, re-emitting the pen only on style changes. If
 /// `over` is set, the listed cols are restyled to the wanted value (the
 /// "expected" view).

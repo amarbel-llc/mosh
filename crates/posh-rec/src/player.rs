@@ -82,6 +82,9 @@ pub struct Player {
     /// Index of the next resize not yet applied.
     next_resize: usize,
     frame_gap: f64,
+    /// The emulator revision the recording was produced against (`posh_rec`
+    /// header), for golden auditing.
+    emu_rev: Option<String>,
 }
 
 impl Player {
@@ -89,6 +92,7 @@ impl Player {
     pub fn from_source(src: &str) -> Result<Player, String> {
         let mut reader = Reader::new(src);
         let header = reader.header()?;
+        let emu_rev = header.posh_rec.as_ref().map(|p| p.emu_rev.clone());
 
         let mut flat = Vec::new();
         let mut writes = Vec::new();
@@ -123,6 +127,7 @@ impl Player {
             times,
             next_resize: 0,
             frame_gap: DEFAULT_FRAME_GAP,
+            emu_rev,
         })
     }
 
@@ -130,6 +135,16 @@ impl Player {
     pub fn with_frame_gap(mut self, secs: f64) -> Player {
         self.frame_gap = secs;
         self
+    }
+
+    /// The `emu_rev` from the recording's `posh_rec` header, if present.
+    pub fn emu_rev(&self) -> Option<&str> {
+        self.emu_rev.as_deref()
+    }
+
+    /// Advance to the end of the recording (feed everything remaining).
+    pub fn step_to_end(&mut self) {
+        self.step(Granularity::Write, usize::MAX);
     }
 
     /// Read access to the emulated terminal (cells, cursor, dumps, ...).

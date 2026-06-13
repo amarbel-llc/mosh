@@ -497,11 +497,13 @@ REMOTE COMMANDS (roaming over encrypted UDP)
 TOOLS
     rec replay <file> [--to-marker NAME] [--dump text|vt|flat]
     rec step <file> --by <granularity> [--n N] [--dump ...]
+    rec bless/assert <file> --golden <path> [--at MARKER] [--kind grid|vt|flat]
         Replay a .castx / asciinema .cast v2 recording through the
         in-process posh-term emulator (deterministic; timing is never
         replayed as sleeps). `replay` prints the final screen; `step`
-        advances by byte/escape/write/change/frame/marker and prints the
-        intermediate screen. Also the standalone `posh-rec` binary, which
+        advances by byte/escape/write/change/frame/marker; `bless`/`assert`
+        write and check golden-frame snapshots (a deterministic
+        capture-pane). Also the standalone `posh-rec` binary, which
         additionally records (`posh-rec record -- <cmd>`).
 
 ENVIRONMENT

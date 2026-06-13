@@ -20,10 +20,15 @@
 pub mod assert;
 pub mod castx;
 pub mod cli;
+pub mod golden;
 pub mod json;
 pub mod player;
 
-use posh_term::{Screen, Terminal};
+// Re-exported so callers of the assertion helpers (which take/return these
+// posh-term types) don't need a separate posh-term dependency.
+pub use posh_term::{Color, Screen};
+
+use posh_term::Terminal;
 
 /// A deterministic replay of a terminal output byte stream through an
 /// in-process emulator.
