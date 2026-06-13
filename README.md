@@ -19,6 +19,7 @@ zmx (Zig) lives in its own repository.
 crates/
   posh-term/   standalone terminal emulation library (no dependencies)
   posh/        the posh binary
+  posh-rec/    deterministic terminal recorder/replayer (lib + posh-rec bin; posh rec)
 doc/           scdoc man-page sources (man posh, posh-server, posh-client, posh(7))
 docs/          ADRs, RFCs, feature records (FDRs), plans, and the manual test plan
 posht/         interactive terminal-capability test (Go; nix build .#posht)
@@ -191,6 +192,24 @@ a prefix/suffix diff) rather than mosh's SSP protobuf instructions with
 zlib; no utmp/motd integration. The full parity contract — what is
 mirrored, what is deliberately dropped, and the open gaps — is FDR 0003
 (`docs/features/`), with the living checklist in issue #44.
+
+### crates/posh-rec
+
+A deterministic terminal recorder/replayer built on `posh-term`: replay a
+recorded output byte stream through the in-process emulator and inspect the
+exact screen, with no live terminal and no timing to race (the
+`tmux capture-pane` + `sleep` flake that motivates it). Depends only on
+`posh-term`; surfaced as the standalone `posh-rec` binary and as `posh rec`.
+
+```
+posh rec replay <file> [--dump text|vt|flat]   # or: posh-rec replay ...
+```
+
+The recording format is `.castx`, a strict superset of asciinema `.cast` v2
+(standard `o`/`i`/`r` events plus an ignorable `m` marker and a `posh_rec`
+header block), so any `.cast` replays through posh-rec and any `.castx` plays
+in `asciinema`. Phase 1 of the epic in issue #56; the recorder, step-ratchet
+player, and assertion/golden surface land in later phases.
 
 ## Building and testing
 
