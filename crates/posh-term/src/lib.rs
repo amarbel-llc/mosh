@@ -38,6 +38,8 @@
 //! - `Terminal::screen(&self) -> &Screen` (cell-level read access)
 //! - `version() -> &'static str` (the emulator revision, flowed from
 //!   version.env at build time; stamped into posh-rec's `.castx` `emu_rev`)
+//! - `Color::to_rgb(self) -> Option<(u8,u8,u8)>` (palette/RGB resolution for
+//!   renderers; `None` for the terminal default)
 #![forbid(unsafe_code)]
 
 /// Placeholder cell size in pixels, shared by the XTWINOPS reports, kitty

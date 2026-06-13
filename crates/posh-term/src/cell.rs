@@ -10,6 +10,20 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
+impl Color {
+    /// Resolve to concrete 24-bit RGB for rendering. `Indexed` slots resolve
+    /// through the default xterm 256-color palette; `Rgb` passes through.
+    /// `Default` returns `None` — it has no fixed value (the renderer should
+    /// emit the terminal's default-color reset instead).
+    pub fn to_rgb(self) -> Option<(u8, u8, u8)> {
+        match self {
+            Color::Default => None,
+            Color::Indexed(i) => Some(default_palette_entry(i)),
+            Color::Rgb(r, g, b) => Some((r, g, b)),
+        }
+    }
+}
+
 /// Underline rendering style (SGR 4 and its colon subparameters).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UnderlineStyle {
@@ -130,6 +144,13 @@ pub(crate) fn default_palette() -> [(u8, u8, u8); 256] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn color_to_rgb_resolves_indexed_and_rgb_but_not_default() {
+        assert_eq!(Color::Default.to_rgb(), None);
+        assert_eq!(Color::Indexed(1).to_rgb(), Some((205, 0, 0)));
+        assert_eq!(Color::Rgb(10, 20, 30).to_rgb(), Some((10, 20, 30)));
+    }
 
     #[test]
     fn palette_defaults() {
