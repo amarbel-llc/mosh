@@ -7,6 +7,7 @@ mod completions;
 mod pty;
 mod remote;
 mod session;
+mod tailnet;
 mod target;
 mod terminfo;
 mod util;
@@ -134,6 +135,14 @@ fn run() -> Result<()> {
         }
         "fork" | "f" => session::cmd_fork(&Config::new(&group)?, args.first().map(|s| s.as_str())),
         "groups" | "gs" => session::cmd_groups(),
+        // Tailnet peer names (MagicDNS), one per line — the completion source
+        // for tab-completing tailscale hosts; empty/silent without tailscale.
+        "tailnet" => {
+            for name in tailnet::names() {
+                println!("{name}");
+            }
+            Ok(())
+        }
         "history" | "hi" => cmd_history(&group, args),
         "completions" | "c" => {
             let shell_arg = args
@@ -463,6 +472,12 @@ SESSION COMMANDS (local persistence)
 
     groups                                     (alias: gs)
         List session groups that contain sessions.
+
+    tailnet
+        List reachable Tailscale peer names (MagicDNS), one per line — what
+        tab-completion offers for tailnet hosts. Empty (and exit 0) when
+        tailscale isn't installed or you're not logged in. A tailnet name
+        then attaches/connects like any other host (e.g. posh peer:dev).
 
     history <name> [--vt]                      (alias: hi)
         Print the session's scrollback. Plain text by default; --vt emits
