@@ -56,7 +56,7 @@ _posh_completions() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  local commands="attach run detach detach-all fork groups list completions kill history server client ssh version help"
+  local commands="attach run detach detach-all fork groups tailnet list completions kill history server client ssh version help"
 
   # Handle -g/--group flag
   if [[ "$prev" == "-g" || "$prev" == "--group" ]]; then
@@ -107,7 +107,8 @@ _posh_completions() {
     # and the mosh-style remote form (ssh config alias).
     local sessions=$(posh list --short 2>/dev/null | tr '\n' ' ')
     local hosts=$(_posh_ssh_hosts | tr '\n' ' ')
-    COMPREPLY=($(compgen -W "$commands $sessions $hosts" -- "$cur"))
+    local tailnet=$(posh tailnet 2>/dev/null | tr '\n' ' ')
+    COMPREPLY=($(compgen -W "$commands $sessions $hosts $tailnet" -- "$cur"))
     return 0
   fi
 
@@ -123,7 +124,7 @@ _posh_completions() {
       COMPREPLY=($(compgen -W "--short --json -j" -- "$cur"))
       ;;
     ssh)
-      COMPREPLY=($(compgen -W "$(_posh_ssh_hosts | tr '\n' ' ')" -- "$cur"))
+      COMPREPLY=($(compgen -W "$(_posh_ssh_hosts | tr '\n' ' ') $(posh tailnet 2>/dev/null | tr '\n' ' ')" -- "$cur"))
       ;;
     *)
       ;;
@@ -147,9 +148,10 @@ const ZSH_COMPLETIONS: &str = r#"_posh() {
   case $state in
     commands)
       # The bare first argument is also the attach shorthand (session
-      # name) and the mosh-style remote form (ssh config alias).
+      # name) and the mosh-style remote form (ssh config alias or tailnet peer).
       _posh_sessions
       _posh_ssh_hosts
+      _posh_tailnet_hosts
       local -a commands
       commands=(
         'attach:Attach to session, creating if needed'
@@ -158,6 +160,7 @@ const ZSH_COMPLETIONS: &str = r#"_posh() {
         'detach-all:Detach all clients from all sessions in the group'
         'fork:Fork current session with same command'
         'groups:List active session groups'
+        'tailnet:List reachable Tailscale peer names'
         'list:List active sessions in group'
         'completions:Shell completion scripts'
         'kill:Kill a session'
@@ -190,6 +193,7 @@ const ZSH_COMPLETIONS: &str = r#"_posh() {
           ;;
         ssh)
           _posh_ssh_hosts
+          _posh_tailnet_hosts
           ;;
       esac
       ;;
@@ -227,6 +231,16 @@ _posh_ssh_hosts() {
     ~/.ssh/config ~/.ssh/config.d/*(N) ~/.ssh/conf.d/*(N) 2>/dev/null \
     | tr ' \t' '\n\n' | command grep -v '[*?!]' | sort -u)"})
   _describe 'ssh host' hosts
+}
+
+_posh_tailnet_hosts() {
+  # Tailscale peer names (MagicDNS), via `posh tailnet`. Empty without tailscale.
+  local -a hosts
+  local output=$(posh tailnet 2>/dev/null)
+  if [[ -n "$output" ]]; then
+    hosts=(${(f)output})
+  fi
+  _describe 'tailnet peer' hosts
 }
 
 compdef _posh posh
@@ -291,7 +305,7 @@ end
 
 complete -c posh -f
 
-set -l subcommands attach run detach detach-all fork groups list completions kill history server client ssh version help
+set -l subcommands attach run detach detach-all fork groups tailnet list completions kill history server client ssh version help
 set -l no_subcmd "not __fish_seen_subcommand_from $subcommands"
 
 complete -c posh -n $no_subcmd -s g -l group -d 'Session group' -r -a '(posh groups 2>/dev/null)'
@@ -302,6 +316,7 @@ complete -c posh -n $no_subcmd -a detach -d 'Detach all clients from current or 
 complete -c posh -n $no_subcmd -a detach-all -d 'Detach all clients from all sessions in the group'
 complete -c posh -n $no_subcmd -a fork -d 'Fork current session with same command'
 complete -c posh -n $no_subcmd -a groups -d 'List active session groups'
+complete -c posh -n $no_subcmd -a tailnet -d 'List reachable Tailscale peer names'
 complete -c posh -n $no_subcmd -a list -d 'List active sessions in group'
 complete -c posh -n $no_subcmd -a completions -d 'Shell completion scripts'
 complete -c posh -n $no_subcmd -a kill -d 'Kill a session'
@@ -317,6 +332,7 @@ complete -c posh -n $no_subcmd -a help -d 'Show help message'
 # host's session names (RFC 0001 namespace).
 complete -c posh -n $no_subcmd -a '(posh list --short 2>/dev/null)' -d 'Session'
 complete -c posh -n $no_subcmd -a '(__posh_ssh_config_hosts)' -d 'ssh host'
+complete -c posh -n $no_subcmd -a '(posh tailnet 2>/dev/null)' -d 'Tailnet peer'
 complete -c posh -n $no_subcmd -a '(__posh_complete_remote_target)' -d 'Remote session'
 
 complete -c posh -n "__fish_seen_subcommand_from attach run detach kill history" -a '(posh list --short 2>/dev/null)' -d 'Session name'
@@ -329,6 +345,7 @@ complete -c posh -n "__fish_seen_subcommand_from list" -l short -d 'Short output
 complete -c posh -n "__fish_seen_subcommand_from list" -l json -s j -d 'JSON output'
 complete -c posh -n "__fish_seen_subcommand_from history" -l vt -d 'VT escape stream output'
 complete -c posh -n "__fish_seen_subcommand_from ssh" -a '(__posh_ssh_config_hosts)' -d 'Host'
+complete -c posh -n "__fish_seen_subcommand_from ssh" -a '(posh tailnet 2>/dev/null)' -d 'Tailnet peer'
 "#;
 
 #[cfg(test)]
@@ -342,6 +359,7 @@ mod tests {
         "detach-all",
         "fork",
         "groups",
+        "tailnet",
         "list",
         "completions",
         "kill",
@@ -471,13 +489,26 @@ mod tests {
     }
 
     #[test]
+    fn scripts_complete_tailnet_peers() {
+        // github #65: bare `posh <peer>` and `posh ssh` complete from Tailscale
+        // peers via `posh tailnet` (which shells out to tailscale status --json).
+        for shell in [Shell::Bash, Shell::Zsh, Shell::Fish] {
+            let script = shell.script();
+            assert!(
+                script.contains("posh tailnet"),
+                "{shell:?} should complete tailnet peers"
+            );
+        }
+    }
+
+    #[test]
     fn bare_position_completes_sessions_and_hosts() {
         // github #37: the first argument is also the attach shorthand and
         // the mosh-style host form, so both complete alongside commands.
         let bash = Shell::Bash.script();
         assert!(
-            bash.contains(r#"compgen -W "$commands $sessions $hosts""#),
-            "bash bare position must offer commands + sessions + hosts"
+            bash.contains(r#"compgen -W "$commands $sessions $hosts $tailnet""#),
+            "bash bare position must offer commands + sessions + hosts + tailnet"
         );
         let fish = Shell::Fish.script();
         assert!(

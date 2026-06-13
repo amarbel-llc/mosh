@@ -94,18 +94,39 @@ pub fn run(host: &str, port: u16, family: Family) -> Result<()> {
 }
 
 fn resolve(host: &str, port: u16, family: Family) -> Result<SocketAddr> {
+    // System resolver first — this honors Tailscale MagicDNS when tailscaled
+    // has wired it into the resolver (the default on most hosts).
     let addrs: Vec<SocketAddr> = (host, port)
         .to_socket_addrs()
-        .map_err(|e| Error(format!("could not resolve {host}: {e}")))?
-        .collect();
+        .map(Iterator::collect)
+        .unwrap_or_default();
     let pick = match family {
         Family::Inet => addrs.iter().find(|a| a.is_ipv4()),
         Family::Inet6 => addrs.iter().find(|a| a.is_ipv6()),
         // Prefer IPv4 (the common path for roaming UDP), fall back to v6.
         Family::Auto => addrs.iter().find(|a| a.is_ipv4()).or_else(|| addrs.first()),
     };
-    pick.copied()
-        .ok_or_else(|| Error(format!("no suitable addresses for {host}")))
+    if let Some(addr) = pick.copied() {
+        return Ok(addr);
+    }
+
+    // Fallback: a tailnet MagicDNS name the system resolver couldn't reach
+    // (MagicDNS off, a container, split-DNS). `tailnet::resolve` shells out to
+    // `tailscale status --json` and degrades to None when unavailable.
+    if let Some(ip) = crate::tailnet::resolve(host) {
+        let family_ok = match family {
+            Family::Inet => ip.is_ipv4(),
+            Family::Inet6 => ip.is_ipv6(),
+            Family::Auto => true,
+        };
+        if family_ok {
+            return Ok(SocketAddr::new(ip, port));
+        }
+    }
+
+    Err(Error(format!(
+        "could not resolve {host} (system resolver and tailnet)"
+    )))
 }
 
 struct ClientState {
