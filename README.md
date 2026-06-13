@@ -141,6 +141,12 @@ The grammar is scp-style and total (RFC 0001: `docs/rfcs/`); every
 pre-namespace form keeps its meaning. The remote session's exit status
 propagates: `posh box:dev; echo $?` reports the session shell's code.
 
+Tailscale peers are first-class hosts: shell completion offers tailnet
+peer names (MagicDNS) alongside `~/.ssh/config` aliases and session names
+(`posh tailnet` lists them), and the roaming transport falls back to a
+peer's tailnet IP when the system resolver can't reach its MagicDNS name.
+Both degrade silently without `tailscale`.
+
 The ssh bootstrap runs `posh-server new` on the remote host (mosh-server
 parity); the package installs `posh-server` as an alias of `posh`, so the
 server host just needs the package on its non-interactive PATH.
